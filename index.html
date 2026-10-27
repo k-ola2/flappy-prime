@@ -79,43 +79,127 @@ function rgb(c){ return 'rgb('+Math.round(c[0])+','+Math.round(c[1])+','+Math.ro
 /* k: 0 = violet nebula, 1 = deep blue nebula. Cycle repeats every CYCLE_PTS points. */
 function dayCycle(sc){ return 0.5-0.5*Math.cos(2*Math.PI*sc/CYCLE_PTS); }
 
-/* ---------- nebula backdrop (blobs pre-rendered once) ---------- */
-var NEB=null;
-function initNebula(){
-  NEB=document.createElement('canvas');
-  NEB.width=W; NEB.height=H;
-  var g=NEB.getContext('2d');
-  var blobs=[
-    [60,120,130,'170,80,230'],
-    [230,260,150,'60,120,240'],
-    [150,400,120,'220,70,170'],
-    [30,420,90,'40,160,220'],
-    [250,60,110,'120,60,200'],
-    [140,230,100,'90,60,220']
-  ];
-  blobs.forEach(function(b){
-    var rg=g.createRadialGradient(b[0],b[1],0,b[0],b[1],b[2]);
-    rg.addColorStop(0,'rgba('+b[3]+',0.22)');
-    rg.addColorStop(0.5,'rgba('+b[3]+',0.08)');
-    rg.addColorStop(1,'rgba('+b[3]+',0)');
-    g.fillStyle=rg;
-    g.fillRect(0,0,W,H);
-  });
+/* ---------- nebula backdrop: palette drifts slowly with time and score ---------- */
+var BLOBS=[
+  [60,120,130,[170,80,230]],
+  [230,260,150,[60,120,240]],
+  [150,400,120,[220,70,170]],
+  [30,420,90,[40,160,220]],
+  [250,60,110,[120,60,200]],
+  [140,230,100,[90,60,220]]
+];
+/* two palettes: violet dusk and deep blue; hue drifts between them over time */
+var NEB_A={top:[14,6,36], mid:[44,16,88], bot:[12,8,40], blob:[[170,80,230],[220,70,170]]};
+var NEB_B={top:[4,10,36], mid:[16,26,74], bot:[6,14,48], blob:[[60,120,240],[40,160,220]]};
+function nebulaMix(t){
+  /* slow drift: one full hue cycle takes ~70 seconds at 60fps */
+  return 0.5-0.5*Math.cos(frames*0.0015);
 }
 function drawNebula(k){
-  var top=mixArr([14,6,36],[4,10,36],k);
-  var mid=mixArr([44,16,88],[16,26,74],k);
-  var bot=mixArr([12,8,40],[6,14,48],k);
+  var m=nebulaMix(k);
+  var top=mixArr(NEB_A.top,NEB_B.top,m);
+  var mid=mixArr(NEB_A.mid,NEB_B.mid,m);
+  var bot=mixArr(NEB_A.bot,NEB_B.bot,m);
   var lg=ctx.createLinearGradient(0,0,0,GROUND_Y);
   lg.addColorStop(0,rgb(top));
   lg.addColorStop(0.55,rgb(mid));
   lg.addColorStop(1,rgb(bot));
   ctx.fillStyle=lg;
   ctx.fillRect(0,0,W,H);
-  /* blobs drift slowly sideways */
+  /* nebula blobs drift slowly sideways and pick up the palette colors */
   var off=-((hillOff*0.2)%W);
-  ctx.drawImage(NEB, Math.round(off), 0);
-  ctx.drawImage(NEB, Math.round(off+W), 0);
+  BLOBS.forEach(function(b,i){
+    var c=mixArr(NEB_A.blob[i%2],NEB_B.blob[i%2],m);
+    var bx=((b[0]+off*(0.6+0.2*(i%3)))%W+W)%W;
+    [bx-W, bx, bx+W].forEach(function(x){
+      var rg=ctx.createRadialGradient(x,b[1],0,x,b[1],b[2]);
+      rg.addColorStop(0,'rgba('+Math.round(c[0])+','+Math.round(c[1])+','+Math.round(c[2])+',0.22)');
+      rg.addColorStop(0.5,'rgba('+Math.round(c[0])+','+Math.round(c[1])+','+Math.round(c[2])+',0.08)');
+      rg.addColorStop(1,'rgba('+Math.round(c[0])+','+Math.round(c[1])+','+Math.round(c[2])+',0)');
+      ctx.fillStyle=rg;
+      ctx.fillRect(x-b[2],b[1]-b[2],b[2]*2,b[2]*2);
+    });
+  });
+}
+
+/* ---------- planets: procedurally drawn, drift slowly far behind the gates ---------- */
+var PLANETS=[];
+var nextPlanetAt=0;
+var PLANET_TYPES=['gas','red','ice'];
+function spawnPlanet(){
+  var type=PLANET_TYPES[Math.floor(Math.random()*PLANET_TYPES.length)];
+  var r = type==='gas' ? 34+Math.random()*10 : 22+Math.random()*14;
+  PLANETS.push({
+    type:type, r:r,
+    x:W+r+20,
+    y:70+Math.random()*(GROUND_Y-180),
+    spd:0.12+Math.random()*0.08,
+    seed:Math.random()*100
+  });
+}
+function updatePlanets(f){
+  if(frames>=nextPlanetAt){
+    spawnPlanet();
+    nextPlanetAt=frames+900+Math.random()*900;
+  }
+  PLANETS.forEach(function(p){ p.x-=p.spd*f; });
+  while(PLANETS.length && PLANETS[0].x < -PLANETS[0].r*3) PLANETS.shift();
+}
+function drawPlanet(p){
+  var x=p.x, y=p.y, r=p.r;
+  ctx.save();
+  /* soft atmosphere halo */
+  var halo=ctx.createRadialGradient(x,y,r*0.9,x,y,r*1.5);
+  var hc = p.type==='red' ? '255,120,80' : p.type==='ice' ? '120,220,255' : '200,160,255';
+  halo.addColorStop(0,'rgba('+hc+',0.22)');
+  halo.addColorStop(1,'rgba('+hc+',0)');
+  ctx.fillStyle=halo;
+  ctx.fillRect(x-r*1.6,y-r*1.6,r*3.2,r*3.2);
+
+  /* ring behind the planet (gas giant) */
+  if(p.type==='gas'){
+    ctx.strokeStyle='rgba(230,200,255,0.35)';
+    ctx.lineWidth=3;
+    ctx.beginPath(); ctx.ellipse(x,y,r*1.9,r*0.45,-0.2,Math.PI,2*Math.PI); ctx.stroke();
+  }
+
+  /* body with a shaded terminator */
+  var base = p.type==='red' ? ['#d9643a','#7a2a1c'] : p.type==='ice' ? ['#7fd6f2','#1f4f7a'] : ['#e9b26b','#7a4a2a'];
+  var bg=ctx.createRadialGradient(x-r*0.35,y-r*0.35,r*0.1,x,y,r);
+  bg.addColorStop(0,base[0]);
+  bg.addColorStop(1,base[1]);
+  ctx.fillStyle=bg;
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+
+  /* banding / surface detail */
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.clip();
+  ctx.globalAlpha=0.18;
+  ctx.fillStyle = p.type==='ice' ? '#ffffff' : '#2a1020';
+  for(var b=0;b<4;b++){
+    var by=y-r+(b+0.5+((p.seed*0.1)%0.5))*(2*r/4.5);
+    ctx.fillRect(x-r, by, 2*r, Math.max(2,r*0.12));
+  }
+  if(p.type==='red'){
+    ctx.globalAlpha=0.25; ctx.fillStyle='#4a1408';
+    ctx.beginPath(); ctx.arc(x+r*0.4,y+r*0.2,r*0.25,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x-r*0.35,y-r*0.3,r*0.18,0,Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+
+  /* ring in front of the planet (gas giant), lower arc */
+  if(p.type==='gas'){
+    ctx.strokeStyle='rgba(240,220,255,0.55)';
+    ctx.lineWidth=3;
+    ctx.beginPath(); ctx.ellipse(x,y,r*1.9,r*0.45,-0.2,0,Math.PI); ctx.stroke();
+    ctx.strokeStyle='rgba(180,140,230,0.4)';
+    ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.ellipse(x,y,r*1.6,r*0.38,-0.2,0,Math.PI); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawPlanets(){
+  PLANETS.forEach(drawPlanet);
 }
 
 /* ---------- drifting starfield (3 parallax layers) ---------- */
@@ -570,6 +654,7 @@ function update(f0){
   var f=f0*(slowLeft>0 ? 0.5 : 1);
   visScore+=(score-visScore)*Math.min(1,0.05*f0);
   updateStars(f0);
+  updatePlanets(f);
   hillOff+=0.35*f;
   groundOff+=speedNow()*f;
   if(shake>0) shake=Math.max(0,shake-0.6*f0);
@@ -666,6 +751,7 @@ function render(){
   }
   drawNebula(k);
   drawStars(k);
+  drawPlanets();
   for(var i=0;i<gates.length;i++) drawGate(gates[i]);
   for(var j=0;j<gates.length;j++) drawItem(gates[j]);
   drawPlatform();
@@ -714,8 +800,8 @@ window.addEventListener('keydown', function(e){
 window.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 
 /* ---------- loop ---------- */
-initNebula();
 initStars();
+nextPlanetAt=60;
 reset();
 var lastT=null;
 function loop(t){
