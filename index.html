@@ -16,14 +16,14 @@
 (function(){
 'use strict';
 
-/* theme: deep-space zones (violet nebula, emerald aurora, amber dust), wormhole every 20 points.
+/* theme: deep-space zones (violet nebula, emerald aurora, amber dust), gradual crossfade every 20 points.
    Asteroid gates, starfield, meteor showers, HUD floor, generative ambient audio. */
 var W=288, H=512, GROUND_H=64, GROUND_Y=H-GROUND_H;
 var BIRD_W=24, BIRD_H=22;
 var GRAV=0.42, FLAP=-7.4, MAX_FALL=9.5, SPEED=2.3;
 var GATE_W=52, CAP_H=14, SPACING=165, BIRD_X=70;
-var INVULN_FRAMES=50, ITEM_CHANCE=1/3, ITEM_SIZE=14;
-var WORM_PTS=20, WORM_FRAMES=110, ZONE_CARD_FRAMES=170;
+var INVULN_FRAMES=50, ITEM_CHANCE=1/8, ITEM_SIZE=14;
+var ZONE_PTS=20, ZONE_BLEND_FRAMES=480;
 var SHOWER_EVERY=3, SHOWER_FRAMES=900;
 var KEY='flappyPrimeBest';
 var RUNS_KEY='flappyPrimeRuns';
@@ -73,7 +73,7 @@ var ROBOT=[
 /* muzzle-flap frame: the grille row glows cyan while the jets fire */
 var ROW_FLAP="KRRKCCCCKRRK";
 
-/* ---------- zones: violet -> emerald -> amber, then repeat. a wormhole every WORM_PTS points ---------- */
+/* ---------- zones: violet -> emerald -> amber, then repeat. every ZONE_PTS points the theme crossfades gradually ---------- */
 var ZONES=[
   { name:'VIOLET NEBULA',
     top:[[14,6,36],[4,10,36]], mid:[[44,16,88],[16,26,74]], bot:[[12,8,40],[6,14,48]],
@@ -94,14 +94,46 @@ var ZONES=[
     star:'#fff3dc', tint:'#ffe2b0', planets:['rust','molten','gold'],
     chords:[[50,57,60,65],[48,55,58,64],[53,60,63,68],[46,53,57,62]], lp:600, aurora:false, dust:true }
 ];
-function Z(){ return ZONES[zoneN%3]; }
+/* live theme: a blend of the outgoing and incoming zone, recomputed every frame */
+var ZM=null;
+function Z(){ return ZM; }
+function hexRgb(h){ var n=parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+function hexCss(a,b,t){
+  var A=hexRgb(a), B=hexRgb(b);
+  return 'rgb('+[0,1,2].map(function(i){ return Math.round(A[i]+(B[i]-A[i])*t); }).join(',')+')';
+}
+function rgbStrLerp(a,b,t){
+  var A=a.split(',').map(Number), B=b.split(',').map(Number);
+  return [0,1,2].map(function(i){ return Math.round(A[i]+(B[i]-A[i])*t); }).join(',');
+}
+function lerpNums(a,b,t){
+  if(typeof a==='number') return a+(b-a)*t;
+  return a.map(function(v,i){ return lerpNums(v,b[i],t); });
+}
+function smooth01(t){ return t*t*(3-2*t); }
+function mixZone(A,B,t){
+  return {
+    top:lerpNums(A.top,B.top,t), mid:lerpNums(A.mid,B.mid,t), bot:lerpNums(A.bot,B.bot,t),
+    blob:lerpNums(A.blob,B.blob,t),
+    rimA:hexCss(A.rimA,B.rimA,t), rimB:hexCss(A.rimB,B.rimB,t),
+    rimRGB:rgbStrLerp(A.rimRGB,B.rimRGB,t), glowRGB:rgbStrLerp(A.glowRGB,B.glowRGB,t),
+    star:hexCss(A.star,B.star,t), tint:hexCss(A.tint,B.tint,t),
+    chords:lerpNums(A.chords,B.chords,t), lp:A.lp+(B.lp-A.lp)*t,
+    auroraA:(A.aurora?1:0)*(1-t)+(B.aurora?1:0)*t,
+    dustA:(A.dust?1:0)*(1-t)+(B.dust?1:0)*t,
+    planetsFrom:A.planets, planetsTo:B.planets, pT:t
+  };
+}
+function refreshZone(){
+  ZM=mixZone(ZONES[zoneFrom%3], ZONES[zoneN%3], smooth01(blendF));
+}
 
 /* ---------- state ---------- */
 var state='ready', frames=0, score=0, shake=0, flash=0;
 var gates=[], bird={x:BIRD_X,y:H/2-80,vy:0};
 var deadAt=0, newBest=false, groundOff=0, hillOff=0;
 var shield=false, invuln=0, flapT=0;
-var zoneN=0, whT=0, whSwapped=false, zoneCardT=0;
+var zoneN=0, zoneFrom=0, blendF=1;
 var showerT=0, showerBanner=0, nextMeteorAt=120;
 var visScore=0;
 
@@ -141,6 +173,7 @@ function drawSky(Zc){
 /* emerald zone: soft aurora ribbons drifting across the top of the sky */
 function drawAurora(Zc){
   ctx.save();
+  ctx.globalAlpha=Zc.auroraA;
   for(var b=0;b<3;b++){
     var y0=28+b*38;
     ctx.beginPath();
@@ -169,9 +202,9 @@ function updateDust(f){
     if(d.x<-2){ d.x=W+2; d.y=Math.random()*GROUND_Y; }
   });
 }
-function drawDust(){
+function drawDust(Zc){
   DUST.forEach(function(d){
-    ctx.fillStyle='rgba(255,179,71,'+d.a.toFixed(2)+')';
+    ctx.fillStyle='rgba(255,179,71,'+(d.a*Zc.dustA).toFixed(2)+')';
     ctx.fillRect(Math.floor(d.x), Math.floor(d.y), d.s, d.s);
   });
 }
@@ -191,7 +224,7 @@ var PLANET_STY={
 var PLANETS=[];
 var nextPlanetAt=0;
 function spawnPlanet(){
-  var set=Z().planets;
+  var set = Math.random()<ZM.pT ? ZM.planetsTo : ZM.planetsFrom;
   var type=set[Math.floor(Math.random()*set.length)];
   var big = (type==='gas'||type==='jade'||type==='gold'||type==='ocean');
   var r = big ? 34+Math.random()*10 : 22+Math.random()*14;
@@ -432,16 +465,21 @@ function drawGate(p){
   drawShaft(p.x, gy, GROUND_Y-gy, false, p.seed+0.5, Zc);
 }
 function gapFor(){
-  /* 1-19: wide, gentle gaps. after the first wormhole: gaps shrink ~6px per zone (floor 92) */
+  /* 1-19: wide, gentle gaps. after each 20-point mark: gaps shrink ~6px per zone (floor 92) */
   if(zoneN===0) return 124+Math.floor(Math.random()*7);
   var base=Math.max(92, 124-6*zoneN);
   return base+Math.floor(Math.random()*5);
 }
-function speedNow(){
+function zoneSpeedMult(z){
   /* 1-19: gentle slope up to +3%. each zone after the first: +8%, and each full 3-zone cycle: +10% more */
-  if(zoneN===0) return SPEED*(1+0.03*clamp(score/(WORM_PTS-1),0,1));
-  var mult=(1+0.08*zoneN)*(1+0.10*Math.floor(zoneN/3));
-  return SPEED*Math.min(2.2,mult);
+  if(z===0) return 1+0.03*clamp(score/(ZONE_PTS-1),0,1);
+  return Math.min(2.2,(1+0.08*z)*(1+0.10*Math.floor(z/3)));
+}
+function speedNow(){
+  /* the speed step eases in with the crossfade so the 20-point mark never jolts the pace */
+  var t=smooth01(blendF);
+  var a=zoneSpeedMult(zoneFrom), b=zoneSpeedMult(zoneN);
+  return SPEED*(a+(b-a)*t);
 }
 function addGate(x){
   var gap=gapFor();
@@ -574,41 +612,6 @@ function drawHUD(){
   hudTag('ZONE '+(zoneN+1), MUTE_BOX.x-6, 10, Z().rimA, true);
 }
 
-/* ---------- wormhole transition: a swirling colorful vortex ---------- */
-function drawWormhole(p){
-  var a=Math.sin(Math.PI*p);
-  var cx=W/2, cy=H/2-20, maxR=Math.hypot(W,H)*0.6;
-  var arms=7;
-  ctx.save();
-  ctx.globalAlpha=clamp(a*1.15,0,1);
-  for(var ar=0;ar<arms;ar++){
-    for(var s=0;s<36;s++){
-      var t=s/36;
-      var r=maxR*(1-t)+8;
-      var ang=ar*(Math.PI*2/arms)+t*7-p*14;
-      var x=cx+Math.cos(ang)*r;
-      var y=cy+Math.sin(ang)*r*0.62;
-      var size=1.5+(1-t)*5.5;
-      var hue=(ar*50+s*10+p*540)%360;
-      ctx.fillStyle='hsl('+Math.round(hue)+',95%,'+Math.round(60+t*20)+'%)';
-      ctx.beginPath(); ctx.arc(x,y,size,0,Math.PI*2); ctx.fill();
-    }
-  }
-  /* bright core */
-  var core=ctx.createRadialGradient(cx,cy,0,cx,cy,40+160*a);
-  core.addColorStop(0,'rgba(255,255,255,'+(a*0.9).toFixed(3)+')');
-  core.addColorStop(0.3,'rgba(255,140,255,'+(a*0.7).toFixed(3)+')');
-  core.addColorStop(1,'rgba(0,0,0,0)');
-  ctx.fillStyle=core;
-  ctx.fillRect(0,0,W,H);
-  ctx.restore();
-  /* white-out at the swap point, hides the theme change */
-  if(p>0.46 && p<0.54){
-    ctx.fillStyle='rgba(255,255,255,'+(1-Math.abs(p-0.5)*20).toFixed(3)+')';
-    ctx.fillRect(0,0,W,H);
-  }
-}
-
 /* ---------- audio: generative ambient pad + soft SFX (WebAudio, no files) ---------- */
 var ac=null, master=null, ambBus=null, sfxBus=null, noiseBuf=null, ambTimer=null, lfoGain=null;
 function ensureAudio(){
@@ -737,21 +740,6 @@ function whoosh(){
   src.connect(bp); bp.connect(g); g.connect(sfxBus);
   src.start(t, Math.random()*0.5); src.stop(t+0.3);
 }
-/* low soft tone (wormhole) */
-function softTone(f0,f1,dur,vol){
-  if(!ac) return;
-  var t=ac.currentTime;
-  var o=ac.createOscillator(); o.type='sine';
-  o.frequency.setValueAtTime(f0,t);
-  o.frequency.exponentialRampToValueAtTime(f1,t+dur);
-  var g=ac.createGain();
-  g.gain.setValueAtTime(0.0001,t);
-  g.gain.exponentialRampToValueAtTime(vol,t+0.05);
-  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
-  o.connect(g); g.connect(sfxBus);
-  o.start(t); o.stop(t+dur+0.05);
-}
-
 /* ---------- game logic ---------- */
 function reset(){
   bird={x:BIRD_X, y:H/2-80, vy:0};
@@ -760,7 +748,8 @@ function reset(){
   newBest=false;
   shake=0; flash=0;
   shield=false; invuln=0; flapT=0;
-  zoneN=0; whT=0; whSwapped=false; zoneCardT=0;
+  zoneN=0; zoneFrom=0; blendF=1;
+  refreshZone();
 }
 function startRun(){
   runs++;
@@ -799,16 +788,14 @@ function hitBird(){
   }
   return true;
 }
-function triggerWormhole(){
-  whT=WORM_FRAMES;
-  whSwapped=false;
-  softTone(180,980,1.0,0.12);
-  whoosh();
+/* the theme starts crossfading to the next zone; refreshZone eases it in over ZONE_BLEND_FRAMES */
+function beginZoneBlend(){
+  zoneFrom=zoneN; zoneN++; blendF=0;
 }
 function action(){
   ensureAudio();
   if(state==='ready'){ startRun(); state='play'; flapNow(); }
-  else if(state==='play'){ if(whT>0) return; flapNow(); }
+  else if(state==='play'){ flapNow(); }
   else if(state==='dead' && frames-deadAt>35){ reset(); startRun(); state='play'; flapNow(); }
 }
 function overlap(ax,ay,aw,ah,bx,by,bw,bh){
@@ -829,7 +816,8 @@ function update(f0){
   if(flash>0) flash=Math.max(0,flash-0.05*f0);
   if(showerT>0) showerT=Math.max(0,showerT-f0);
   if(showerBanner>0) showerBanner=Math.max(0,showerBanner-f0);
-  if(zoneCardT>0) zoneCardT=Math.max(0,zoneCardT-f0);
+  if(blendF<1) blendF=Math.min(1,blendF+f0/ZONE_BLEND_FRAMES);
+  refreshZone();
 
   if(state==='ready'){
     bird.vy=0;
@@ -838,18 +826,6 @@ function update(f0){
   }
 
   if(state==='play'){
-    /* wormhole: the world holds still while the vortex plays, then the zone swaps mid-swirl */
-    if(whT>0){
-      whT=Math.max(0,whT-f0);
-      if(!whSwapped && whT<=WORM_FRAMES/2){
-        whSwapped=true;
-        zoneN++;
-        zoneCardT=ZONE_CARD_FRAMES;
-        chordIdx=0;
-        if(ac) playChord(ac.currentTime+0.05);
-      }
-      return;
-    }
     if(invuln>0) invuln=Math.max(0,invuln-f0);
     if(flapT>0) flapT=Math.max(0,flapT-f0);
 
@@ -869,7 +845,7 @@ function update(f0){
         p.passed=true;
         score++;
         chime(1318,0.09);
-        if(score>0 && score%WORM_PTS===0){ triggerWormhole(); }
+        if(score>0 && score%ZONE_PTS===0){ beginZoneBlend(); }
       }
       if(p.item && !p.item.taken){
         var ix=p.x+GATE_W/2-ITEM_SIZE/2, iy=p.top+p.gap/2-ITEM_SIZE/2;
@@ -930,20 +906,17 @@ function render(){
     ctx.translate(Math.round((Math.random()*2-1)*shake), Math.round((Math.random()*2-1)*shake));
   }
   drawSky(Zc);
-  if(Zc.aurora) drawAurora(Zc);
+  if(Zc.auroraA>0.01) drawAurora(Zc);
   drawStars(Zc);
   drawMeteors(Zc);
   drawPlanets();
-  if(Zc.dust) drawDust();
+  if(Zc.dustA>0.01) drawDust(Zc);
   for(var i=0;i<gates.length;i++) drawGate(gates[i]);
   for(var j=0;j<gates.length;j++) drawItem(gates[j]);
   drawGround(Zc);
   drawBird();
   ctx.restore();
 
-  if(whT>0){
-    drawWormhole(1-whT/WORM_FRAMES);
-  }
   if(flash>0){
     ctx.fillStyle='rgba(255,255,255,'+(flash*0.7).toFixed(3)+')';
     ctx.fillRect(0,0,W,H);
@@ -951,13 +924,7 @@ function render(){
   if(state==='play'){
     drawScore();
     drawHUD();
-    if(zoneCardT>0 && whT<=0){
-      var za=Math.min(1, zoneCardT/40);
-      ctx.globalAlpha=za;
-      txt('ZONE '+(zoneN+1)+'  '+Zc.name, W/2, 112, 15, Zc.rimA);
-      ctx.globalAlpha=1;
-    }
-    if(showerBanner>0 && whT<=0){
+    if(showerBanner>0){
       ctx.globalAlpha=Math.min(1, showerBanner/30);
       txt('METEOR SHOWER', W/2, 140, 13, '#ffffff');
       ctx.globalAlpha=1;
@@ -1025,6 +992,7 @@ window.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 initStars();
 nextPlanetAt=60;
 reset();
+refreshZone();
 var lastT=null;
 function loop(t){
   var dt=(lastT===null)?16.667:(t-lastT);
