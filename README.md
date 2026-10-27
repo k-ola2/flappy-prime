@@ -1,15 +1,21 @@
-# Prime: Star Run
+# Prime: Earth Seasons
 
-Deep-space edition of Flappy PRIME. You fly the robot warrior Prime through a nebula, threading between asteroid gates. Single-file HTML canvas game, no dependencies, no external assets. Open index.html in a browser.
+Robot warrior edition of Flappy Bird, set on Earth through four seasons. Single-file HTML canvas game, no dependencies. Open index.html in a browser.
 
-Controls: tap, click, or press Space / Up Arrow / Enter to flap. Tap or press again on the game over screen to retry. Press M or tap the speaker icon (top right) to mute or unmute.
+Controls: tap, click, or press Space / Up Arrow / Enter to flap. Tap or press again on the game over screen to retry. Press M or tap the speaker icon (top-right) to mute.
+
+Seasons: the game cycles SPRING, SUMMER, AUTUMN, WINTER every 20 points. Each change is a gradual 8 second crossfade, never a jump.
+- SPRING: soft bright sky, fresh green hills, blossom trees, pink petals drifting. Pillars are mossy blossom-green stone with pink blossoms.
+- SUMMER: warm golden sky with the sun, heat shimmer, sand ripples. Pillars are sandstone and terracotta.
+- AUTUMN: amber sky, orange leaves falling. Pillars are bare tree trunks with branches and warm leaf caps.
+- WINTER: pale cold sky, falling snow, snowy ground. Pillars are ice with icicles and frost glow.
+
+Day and night: each season cycles through day and night over about 60 seconds. The sun crosses the sky by day and the moon by night, with stars after dark. Each season has its own night palette, and weather particles dim at night.
+
+Music: a generative ambient pad that changes chords per season. Spring is light, summer warm, autumn mellow, winter quiet and crisp.
 
 Features:
-- Deep-space nebula backdrop with a drifting, twinkling starfield. The nebula hue slowly drifts between violet and deep blue over time.
-- Procedural planets drift past occasionally: a ringed gas giant, a red rocky world, and a blue ice planet.
-- Asteroid gates: riveted metal shafts with embedded rock chunks and glowing energy emitter plates at the gap.
-- Power-ups: energy orbs spawn in gate gaps sometimes. "S" (cyan) is a shield that blocks one hit and gives brief invulnerability. "T" (purple) slows time for about 5 seconds. HUD shows active power-ups.
-- Hard mode after 15 points: narrower gaps and faster scrolling.
-- Sound: a calm generative ambient pad loop built with WebAudio (starts on your first tap), plus soft chimes on each point, a muffled thud on impact, and a soft whoosh on each flap. Mute state is saved in localStorage.
-- Prime's thruster glows brighter on each flap.
+- Shield orb: about 1 in 8 gates carries an "S" orb. It blocks one hit and gives brief invulnerability.
+- Gentle start: gaps are wide for the first 19 points. Each new season after that narrows the gaps and speeds the scroll a little.
 - Best score saved in localStorage.
+- Mute saved in localStorage.

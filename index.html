@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Prime: Star Run</title>
+<title>Prime: Earth Seasons</title>
 <style>
-  html,body{margin:0;height:100%;background:#05030d;overflow:hidden;}
+  html,body{margin:0;height:100%;background:#0b1a12;overflow:hidden;}
   body{display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;}
-  canvas{display:block;background:#05030d;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;}
+  canvas{display:block;background:#0b1a12;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;}
 </style>
 </head>
 <body>
@@ -16,19 +16,21 @@
 (function(){
 'use strict';
 
-/* theme: deep-space zones (violet nebula, emerald aurora, amber dust), gradual crossfade every 20 points.
-   Asteroid gates, starfield, meteor showers, HUD floor, generative ambient audio. */
+/* Prime: Earth Seasons. Single-file canvas game, no dependencies.
+   Four seasons (SPRING, SUMMER, AUTUMN, WINTER) cycle every 20 points with a gradual 8 second crossfade.
+   Each season has its own sky, hills, weather particles, pillars and music mood.
+   Day and night drift within every season: the sun or moon crosses the sky and night palettes take over. */
 var W=288, H=512, GROUND_H=64, GROUND_Y=H-GROUND_H;
 var BIRD_W=24, BIRD_H=22;
 var GRAV=0.42, FLAP=-7.4, MAX_FALL=9.5, SPEED=2.3;
 var GATE_W=52, CAP_H=14, SPACING=165, BIRD_X=70;
 var INVULN_FRAMES=50, ITEM_CHANCE=1/8, ITEM_SIZE=14;
-var ZONE_PTS=20, ZONE_BLEND_FRAMES=480;
-var SHOWER_EVERY=3, SHOWER_FRAMES=900;
+var ZONE_PTS=20, ZONE_BLEND_FRAMES=480;   /* 480 frames = 8 seconds at 60fps */
+var DAY_LEN=3600;                          /* one full day and night = 60 seconds */
 var KEY='flappyPrimeBest';
-var RUNS_KEY='flappyPrimeRuns';
 var MUTE_KEY='flappyPrimeMuted';
 var MUTE_BOX={x:W-30,y:8,w:22,h:22};
+var SEASON_NAMES=['SPRING','SUMMER','AUTUMN','WINTER'];
 
 var cv=document.getElementById('game');
 var ctx=cv.getContext('2d');
@@ -45,15 +47,16 @@ fit();
 var best=0;
 try{ best=parseInt(localStorage.getItem(KEY),10)||0; }catch(e){}
 function storeBest(v){ try{ localStorage.setItem(KEY,String(v)); }catch(e){} }
-var runs=0;
-try{ runs=parseInt(localStorage.getItem(RUNS_KEY),10)||0; }catch(e){}
 
 var muted=false;
 try{ muted=localStorage.getItem(MUTE_KEY)==='1'; }catch(e){}
 
 function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
-function mixArr(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
-function rgbStr(c,a){ return 'rgba('+Math.round(c[0])+','+Math.round(c[1])+','+Math.round(c[2])+','+a+')'; }
+function smooth01(t){ t=clamp(t,0,1); return t*t*(3-2*t); }
+function lerpC(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+function rgb(c,a){
+  return 'rgba('+Math.round(c[0])+','+Math.round(c[1])+','+Math.round(c[2])+','+(a===undefined?1:a).toFixed(3)+')';
+}
 
 /* ---------- robot sprite (K=outline, B=blue armor, R=red armor, W=eye white, C=cyan optic) ---------- */
 var COL={K:'#14142b',B:'#2f6fe0',R:'#e03a3a',W:'#ffffff',C:'#7ff3ff'};
@@ -70,62 +73,97 @@ var ROBOT=[
   ".KRRRRRRRRK.",
   "..KK....KK.."
 ];
-/* muzzle-flap frame: the grille row glows cyan while the jets fire */
+/* muzzle-flap frame: the grille row glows while the jets fire */
 var ROW_FLAP="KRRKCCCCKRRK";
 
-/* ---------- zones: violet -> emerald -> amber, then repeat. every ZONE_PTS points the theme crossfades gradually ---------- */
-var ZONES=[
-  { name:'VIOLET NEBULA',
-    top:[[14,6,36],[4,10,36]], mid:[[44,16,88],[16,26,74]], bot:[[12,8,40],[6,14,48]],
-    blob:[[[170,80,230],[60,120,240]],[[220,70,170],[40,160,220]]],
-    rimA:'#7ff3ff', rimB:'#c58bff', rimRGB:'127,243,255', glowRGB:'197,139,255',
-    star:'#ffffff', tint:'#cfe8ff', planets:['gas','red','ice'],
-    chords:[[57,64,67,72],[53,60,64,69],[48,55,59,64],[55,62,66,71]], lp:800, aurora:false, dust:false },
-  { name:'EMERALD AURORA',
-    top:[[3,18,26],[2,26,22]], mid:[[8,48,58],[10,66,56]], bot:[[4,24,32],[4,34,30]],
-    blob:[[[40,220,150],[90,255,170]],[[60,200,255],[40,180,200]]],
-    rimA:'#5cffb0', rimB:'#9fe8ff', rimRGB:'92,255,176', glowRGB:'92,255,176',
-    star:'#e8fff4', tint:'#c9ffe6', planets:['ocean','mint','jade'],
-    chords:[[55,62,66,71],[50,57,62,69],[52,59,63,68],[57,64,68,74]], lp:1100, aurora:true, dust:false },
-  { name:'AMBER DUST',
-    top:[[30,12,6],[40,20,8]], mid:[[84,38,16],[100,56,22]], bot:[[40,18,8],[50,26,10]],
-    blob:[[[255,150,60],[255,200,90]],[[220,90,40],[230,120,50]]],
-    rimA:'#ffb347', rimB:'#ff6f5a', rimRGB:'255,179,71', glowRGB:'255,179,71',
-    star:'#fff3dc', tint:'#ffe2b0', planets:['rust','molten','gold'],
-    chords:[[50,57,60,65],[48,55,58,64],[53,60,63,68],[46,53,57,62]], lp:600, aurora:false, dust:true }
+/* ---------- seasons: day and night palettes (all rgb arrays so they can be blended) ---------- */
+var PAL_DAY=[
+  { /* SPRING: soft bright sky, fresh green hills, blossom */
+    top:[136,206,250], mid:[196,236,255], bot:[222,246,204],
+    hillFar:[164,222,156], hillNear:[104,192,98], ground:[120,190,84], groundDark:[78,136,56],
+    rim:[255,160,200], glow:[255,190,220], body:[255,246,206]
+  },
+  { /* SUMMER: warm golden sky, sun, sandstone */
+    top:[255,190,96], mid:[255,224,150], bot:[246,166,94],
+    hillFar:[236,192,124], hillNear:[218,156,96], ground:[226,176,110], groundDark:[170,114,66],
+    rim:[255,200,90], glow:[255,190,80], body:[255,222,90]
+  },
+  { /* AUTUMN: amber sky, falling leaves, warm trees */
+    top:[242,160,76], mid:[252,202,122], bot:[232,132,66],
+    hillFar:[206,132,72], hillNear:[170,98,50], ground:[150,92,44], groundDark:[94,54,28],
+    rim:[255,178,70], glow:[255,150,60], body:[255,176,82]
+  },
+  { /* WINTER: pale cold sky, snow and ice */
+    top:[180,214,242], mid:[222,238,250], bot:[244,249,255],
+    hillFar:[208,226,240], hillNear:[238,246,252], ground:[246,250,255], groundDark:[196,216,236],
+    rim:[150,226,255], glow:[160,220,255], body:[250,252,255]
+  }
 ];
-/* live theme: a blend of the outgoing and incoming zone, recomputed every frame */
-var ZM=null;
-function Z(){ return ZM; }
-function hexRgb(h){ var n=parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; }
-function hexCss(a,b,t){
-  var A=hexRgb(a), B=hexRgb(b);
-  return 'rgb('+[0,1,2].map(function(i){ return Math.round(A[i]+(B[i]-A[i])*t); }).join(',')+')';
+var PAL_NIGHT=[
+  { /* SPRING night: indigo-teal, moon, stars */
+    top:[16,30,64], mid:[34,62,98], bot:[50,90,104],
+    hillFar:[30,60,70], hillNear:[22,50,50], ground:[30,70,46], groundDark:[14,40,28],
+    rim:[210,160,220], glow:[160,160,220], body:[226,236,255]
+  },
+  { /* SUMMER night: desert dusk, plum and rust */
+    top:[40,18,44], mid:[96,44,66], bot:[150,72,58],
+    hillFar:[80,44,52], hillNear:[60,34,40], ground:[108,58,40], groundDark:[64,32,24],
+    rim:[255,150,90], glow:[220,120,90], body:[238,226,220]
+  },
+  { /* AUTUMN night: dusky plum, low ember glow */
+    top:[44,22,36], mid:[92,42,44], bot:[126,62,40],
+    hillFar:[72,40,40], hillNear:[52,28,30], ground:[80,44,30], groundDark:[46,24,18],
+    rim:[230,140,70], glow:[200,110,60], body:[238,214,180]
+  },
+  { /* WINTER night: deep navy, pale ice glow */
+    top:[12,24,48], mid:[30,50,86], bot:[60,84,120],
+    hillFar:[52,70,100], hillNear:[120,140,170], ground:[170,190,215], groundDark:[100,120,150],
+    rim:[120,210,255], glow:[120,190,240], body:[210,226,255]
+  }
+];
+/* pillar styles: each gate keeps the season it spawned in */
+var PILLAR=[
+  { s0:'#4f8f4e', s1:'#8fd08a', s2:'#2f6a42', band:'#2e5e3a', cap:'#b8e89c', rimc:'#ffb3d1',
+    blossom:['#ffb3d1','#ffd6e6','#ff8fbf'], glow:'#ffb3d1' },
+  { s0:'#c98a52', s1:'#f4d29a', s2:'#a8603a', band:'#7a3e22', cap:'#c96a3e', rimc:'#ffc65a',
+    glow:'#ffb060' },
+  { s0:'#4a2f1a', s1:'#8a5a34', s2:'#3a2412', bark:'#241409', cap:'#5a3a20', rimc:'#ff9a3a',
+    leaves:['#ff8c2a','#e25c1a','#ffb84d'], glow:'#ffa040' },
+  { s0:'#7fc4e8', s1:'#e6fbff', s2:'#4f9ed0', cap:'#d8f4ff', icicle:'#eefcff', rimc:'#9fe6ff',
+    glow:'#bff1ff' }
+];
+/* music per season: chord loops, filter brightness, level */
+var SEASON_MUSIC=[
+  { chords:[[60,64,67,72],[57,62,66,71],[53,57,60,64],[55,59,62,67]], lp:1500, gain:1.0 },  /* spring: light, major */
+  { chords:[[55,59,62,67],[53,57,60,64],[48,52,55,60],[50,54,57,62]], lp:900,  gain:1.0 },  /* summer: warm, low */
+  { chords:[[57,60,64,69],[50,53,57,62],[53,57,60,65],[55,59,62,67]], lp:650,  gain:0.9 },  /* autumn: mellow, minor */
+  { chords:[[62,67,71,74],[59,64,67,71],[64,67,71,76],[57,64,67,72]], lp:1800, gain:0.7 }   /* winter: quiet, crisp */
+];
+
+/* ---------- live state: palette, blend and day/night are recomputed every frame ---------- */
+var PAL=null, BLEND=1, DAYNESS=1, NIGHT=0, BODY_A=0;
+function palFor(s,n){
+  var D=PAL_DAY[s], N=PAL_NIGHT[s], o={};
+  for(var k in D){ if(D.hasOwnProperty(k)) o[k]=lerpC(D[k],N[k],n); }
+  return o;
 }
-function rgbStrLerp(a,b,t){
-  var A=a.split(',').map(Number), B=b.split(',').map(Number);
-  return [0,1,2].map(function(i){ return Math.round(A[i]+(B[i]-A[i])*t); }).join(',');
+function computePal(){
+  /* starts at noon, one full day and night every DAY_LEN frames */
+  BODY_A=Math.PI/2+2*Math.PI*frames/DAY_LEN;
+  var sinA=Math.sin(BODY_A);
+  DAYNESS=smooth01((sinA+0.35)/0.7);
+  NIGHT=1-DAYNESS;
+  BLEND=smooth01(blendF);
+  var A=palFor(zoneFrom%4,NIGHT), B=palFor(zoneN%4,NIGHT);
+  PAL={};
+  for(var k in A){ if(A.hasOwnProperty(k)) PAL[k]=lerpC(A[k],B[k],BLEND); }
 }
-function lerpNums(a,b,t){
-  if(typeof a==='number') return a+(b-a)*t;
-  return a.map(function(v,i){ return lerpNums(v,b[i],t); });
-}
-function smooth01(t){ return t*t*(3-2*t); }
-function mixZone(A,B,t){
-  return {
-    top:lerpNums(A.top,B.top,t), mid:lerpNums(A.mid,B.mid,t), bot:lerpNums(A.bot,B.bot,t),
-    blob:lerpNums(A.blob,B.blob,t),
-    rimA:hexCss(A.rimA,B.rimA,t), rimB:hexCss(A.rimB,B.rimB,t),
-    rimRGB:rgbStrLerp(A.rimRGB,B.rimRGB,t), glowRGB:rgbStrLerp(A.glowRGB,B.glowRGB,t),
-    star:hexCss(A.star,B.star,t), tint:hexCss(A.tint,B.tint,t),
-    chords:lerpNums(A.chords,B.chords,t), lp:A.lp+(B.lp-A.lp)*t,
-    auroraA:(A.aurora?1:0)*(1-t)+(B.aurora?1:0)*t,
-    dustA:(A.dust?1:0)*(1-t)+(B.dust?1:0)*t,
-    planetsFrom:A.planets, planetsTo:B.planets, pT:t
-  };
-}
-function refreshZone(){
-  ZM=mixZone(ZONES[zoneFrom%3], ZONES[zoneN%3], smooth01(blendF));
+/* how much each season should show right now (fades out and in during the crossfade) */
+function sw(s){
+  var w=0;
+  if(zoneFrom%4===s) w+=1-BLEND;
+  if(zoneN%4===s) w+=BLEND;
+  return w;
 }
 
 /* ---------- state ---------- */
@@ -134,335 +172,367 @@ var gates=[], bird={x:BIRD_X,y:H/2-80,vy:0};
 var deadAt=0, newBest=false, groundOff=0, hillOff=0;
 var shield=false, invuln=0, flapT=0;
 var zoneN=0, zoneFrom=0, blendF=1;
-var showerT=0, showerBanner=0, nextMeteorAt=120;
 var visScore=0;
 
-/* ---------- nebula backdrop: palette drifts slowly between two tones of the zone ---------- */
-var BLOBS=[[60,120,130],[230,260,150],[150,400,120],[30,420,90],[250,60,110],[140,230,100]];
-function nebulaMix(){
-  /* slow drift: one full hue cycle takes ~70 seconds at 60fps */
-  return 0.5-0.5*Math.cos(frames*0.0015);
-}
-function drawSky(Zc){
-  var m=nebulaMix();
-  var top=mixArr(Zc.top[0],Zc.top[1],m);
-  var mid=mixArr(Zc.mid[0],Zc.mid[1],m);
-  var bot=mixArr(Zc.bot[0],Zc.bot[1],m);
+/* ---------- sky ---------- */
+function drawSky(){
   var lg=ctx.createLinearGradient(0,0,0,GROUND_Y);
-  lg.addColorStop(0,rgbStr(top,1));
-  lg.addColorStop(0.55,rgbStr(mid,1));
-  lg.addColorStop(1,rgbStr(bot,1));
+  lg.addColorStop(0,rgb(PAL.top,1));
+  lg.addColorStop(0.55,rgb(PAL.mid,1));
+  lg.addColorStop(1,rgb(PAL.bot,1));
   ctx.fillStyle=lg;
   ctx.fillRect(0,0,W,H);
-  /* nebula blobs drift slowly sideways and pick up the palette colors */
-  var off=-((hillOff*0.2)%W);
-  BLOBS.forEach(function(b,i){
-    var pair=Zc.blob[i%2];
-    var c=mixArr(pair[0],pair[1],m);
-    var bx=((b[0]+off*(0.6+0.2*(i%3)))%W+W)%W;
-    [bx-W, bx, bx+W].forEach(function(x){
-      var rg=ctx.createRadialGradient(x,b[1],0,x,b[1],b[2]);
-      rg.addColorStop(0,rgbStr(c,0.24));
-      rg.addColorStop(0.5,rgbStr(c,0.09));
-      rg.addColorStop(1,rgbStr(c,0));
-      ctx.fillStyle=rg;
-      ctx.fillRect(x-b[2],b[1]-b[2],b[2]*2,b[2]*2);
-    });
-  });
 }
-/* emerald zone: soft aurora ribbons drifting across the top of the sky */
-function drawAurora(Zc){
-  ctx.save();
-  ctx.globalAlpha=Zc.auroraA;
-  for(var b=0;b<3;b++){
-    var y0=28+b*38;
+
+/* ---------- sun by day, moon by night, both crossing the sky on an arc ---------- */
+function drawBodies(){
+  var a=BODY_A;
+  var sx=W*0.5-W*0.42*Math.cos(a), sy=280-240*Math.sin(a);
+  var mx=W*0.5+W*0.42*Math.cos(a), my=280+240*Math.sin(a);
+  if(DAYNESS>0.02) drawSun(sx,sy,DAYNESS);
+  if(NIGHT>0.02) drawMoon(mx,my,NIGHT);
+}
+function drawSun(x,y,a){
+  var g=ctx.createRadialGradient(x,y,6,x,y,64);
+  g.addColorStop(0,rgb(PAL.glow,0.45*a));
+  g.addColorStop(1,rgb(PAL.glow,0));
+  ctx.fillStyle=g;
+  ctx.fillRect(x-64,y-64,128,128);
+  ctx.fillStyle=rgb(PAL.body,a);
+  ctx.beginPath(); ctx.arc(x,y,13,0,Math.PI*2); ctx.fill();
+}
+function drawMoon(x,y,a){
+  var g=ctx.createRadialGradient(x,y,4,x,y,38);
+  g.addColorStop(0,rgb(PAL.glow,0.25*a));
+  g.addColorStop(1,rgb(PAL.glow,0));
+  ctx.fillStyle=g;
+  ctx.fillRect(x-38,y-38,76,76);
+  ctx.fillStyle=rgb(PAL.body,a);
+  ctx.beginPath(); ctx.arc(x,y,10,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=rgb(PAL.top,0.25*a);
+  ctx.beginPath(); ctx.arc(x-3,y-2,2.2,0,Math.PI*2); ctx.arc(x+3,y+3,1.6,0,Math.PI*2); ctx.fill();
+}
+
+/* ---------- stars: only at night ---------- */
+var STARS=[];
+for(var si=0;si<60;si++){
+  STARS.push({x:Math.random()*W, y:Math.random()*240, sz:Math.random()<0.25?2:1, tw:Math.random()*6.28});
+}
+function drawStars(){
+  if(NIGHT<0.02) return;
+  STARS.forEach(function(s){
+    s.tw+=0.03;
+    ctx.globalAlpha=NIGHT*(0.45+0.55*Math.sin(s.tw));
+    ctx.fillStyle=rgb(PAL.body,1);
+    ctx.fillRect(Math.floor(s.x), Math.floor(s.y), s.sz, s.sz);
+  });
+  ctx.globalAlpha=1;
+}
+
+/* ---------- hills: two parallax ridges, each season adds its own decor ---------- */
+function ridgePath(base,amp,sp,seed){
+  ctx.beginPath();
+  ctx.moveTo(0,GROUND_Y);
+  for(var x=0;x<=W+8;x+=8){
+    var xx=x+hillOff*sp;
+    var y=base+Math.sin(xx*0.02+seed)*amp+Math.sin(xx*0.051+seed*2)*amp*0.35;
+    ctx.lineTo(x,y);
+  }
+  ctx.lineTo(W,GROUND_Y);
+  ctx.closePath();
+}
+function drawHills(){
+  ctx.fillStyle=rgb(PAL.hillFar,1);
+  ridgePath(300,22,0.15,0); ctx.fill();
+  /* season decor on the far ridge */
+  var wSp=sw(3), wSu=sw(1), wAu=sw(2);
+  if(wSp>0.01 || wSu>0.01 || wAu>0.01){
+    var i;
+    if(wSu>0.01){
+      ctx.globalAlpha=wSu*(1-0.5*NIGHT)+0.0;
+      ctx.fillStyle='#c97a48';
+      for(i=0;i<5;i++){
+        var mx=mod(i*88-hillOff*0.15,W+100)-50;
+        ctx.beginPath(); ctx.moveTo(mx,300); ctx.lineTo(mx+6,276); ctx.lineTo(mx+34,276); ctx.lineTo(mx+40,300); ctx.closePath(); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
+    if(wAu>0.01){
+      ctx.globalAlpha=wAu*(1-0.5*NIGHT);
+      ctx.strokeStyle='#4a2a14'; ctx.lineWidth=2;
+      for(i=0;i<5;i++){
+        var tx=mod(i*80-hillOff*0.2,W+80)-40;
+        ctx.beginPath();
+        ctx.moveTo(tx,300); ctx.lineTo(tx,266);
+        ctx.moveTo(tx,280); ctx.lineTo(tx-8,268);
+        ctx.moveTo(tx,272); ctx.lineTo(tx+9,260);
+        ctx.stroke();
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+  ctx.fillStyle=rgb(PAL.hillNear,1);
+  ridgePath(352,14,0.3,1.7); ctx.fill();
+  if(wSp>0.01){
+    ctx.globalAlpha=wSp*(1-0.35*NIGHT);
+    for(i=0;i<5;i++){
+      var bx=mod(i*80-hillOff*0.3,W+80)-40;
+      ctx.fillStyle='#6b4a2a';
+      ctx.fillRect(bx-1,338,2,14);
+      ctx.fillStyle='#ffb3d1';
+      ctx.beginPath(); ctx.arc(bx,332,9,0,Math.PI*2); ctx.arc(bx+6,330,7,0,Math.PI*2); ctx.arc(bx-6,331,7,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#ff8fbf';
+      ctx.fillRect(bx+2,334,2,2); ctx.fillRect(bx-4,329,2,2);
+    }
+    ctx.globalAlpha=1;
+  }
+  if(wSp>0.01 || wSu>0.01){
+    /* nothing extra on the near ridge for summer, its tone carries the sand */
+  }
+  if(sw(3)>0.01){
+    ctx.globalAlpha=sw(3)*0.9;
+    ctx.strokeStyle='#ffffff'; ctx.lineWidth=4;
+    ridgePath(300-8,22,0.15,0); ctx.stroke();
+    ridgePath(352-6,14,0.3,1.7); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+}
+function mod(a,n){ return ((a%n)+n)%n; }
+
+/* ---------- heat shimmer (summer) ---------- */
+function drawHeat(){
+  var w=sw(1);
+  if(w<0.01) return;
+  ctx.strokeStyle='rgba(255,240,200,'+(0.10*w*(1-0.6*NIGHT)).toFixed(3)+')';
+  ctx.lineWidth=1;
+  for(var r=0;r<6;r++){
     ctx.beginPath();
+    var yy=330+r*18;
     for(var x=0;x<=W;x+=6){
-      var y=y0+Math.sin(x*0.018+frames*0.02+b*1.7)*14+Math.sin(x*0.047-frames*0.013+b)*5;
+      var y=yy+Math.sin(x*0.09+frames*0.09+r)*1.6;
       if(x===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
     }
-    for(var x2=W;x2>=0;x2-=6){
-      ctx.lineTo(x2, y0+26+Math.sin(x2*0.018+frames*0.02+b*1.7+0.6)*10);
+    ctx.stroke();
+  }
+}
+
+/* ---------- weather particles: petals, sand motes, leaves, snow. dimmed at night ---------- */
+var PARTS=[];
+for(var ps=0;ps<4;ps++){
+  for(var pi=0;pi<22;pi++){
+    PARTS.push({s:ps, x:Math.random()*W, y:Math.random()*GROUND_Y, ph:Math.random()*6.28, sz:0.7+Math.random()*0.6, c:Math.floor(Math.random()*3)});
+  }
+}
+function updateParts(f){
+  PARTS.forEach(function(p){
+    p.ph+=0.04*f;
+    if(p.s===0){ /* spring petals drift down and sideways */
+      p.y+=0.7*f; p.x+=(-0.5+0.5*Math.sin(p.ph))*f;
+    } else if(p.s===1){ /* summer dust specks skim left */
+      p.y+=0.15*f*Math.sin(p.ph*0.5); p.x-=1.3*f;
+    } else if(p.s===2){ /* autumn leaves tumble and fall */
+      p.y+=0.9*f; p.x+=(-0.6+0.6*Math.sin(p.ph))*f;
+    } else { /* winter snow falls slowly with a sway */
+      p.y+=0.8*f; p.x+=(-0.15+0.4*Math.sin(p.ph))*f;
     }
-    ctx.closePath();
-    ctx.fillStyle = (b%2) ? 'rgba(127,255,200,0.10)' : 'rgba(92,255,176,0.10)';
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-/* ---------- amber zone: drifting dust motes ---------- */
-var DUST=[];
-for(var di=0;di<26;di++){
-  DUST.push({x:Math.random()*W, y:Math.random()*GROUND_Y, v:0.3+Math.random()*0.9, a:0.2+Math.random()*0.5, s:Math.random()<0.3?2:1});
-}
-function updateDust(f){
-  DUST.forEach(function(d){
-    d.x-=d.v*f;
-    if(d.x<-2){ d.x=W+2; d.y=Math.random()*GROUND_Y; }
-  });
-}
-function drawDust(Zc){
-  DUST.forEach(function(d){
-    ctx.fillStyle='rgba(255,179,71,'+(d.a*Zc.dustA).toFixed(2)+')';
-    ctx.fillRect(Math.floor(d.x), Math.floor(d.y), d.s, d.s);
-  });
-}
-
-/* ---------- planets: procedurally drawn, each zone has its own planet set ---------- */
-var PLANET_STY={
-  gas:  {base:['#e9b26b','#7a4a2a'], halo:'200,160,255', ring:'#f0dcff', band:'#2a1020'},
-  red:  {base:['#d9643a','#7a2a1c'], halo:'255,120,80', band:'#2a1020', spot:'#4a1408'},
-  ice:  {base:['#7fd6f2','#1f4f7a'], halo:'120,220,255', band:'#ffffff'},
-  ocean:{base:['#3fd6c4','#0f4a58'], halo:'80,255,200', band:'#0a3040', spot:'#e8fff4'},
-  mint: {base:['#c8ffe0','#2f7a5c'], halo:'170,255,210', band:'#1f5a44', spot:'#1f5a44'},
-  jade: {base:['#7fe89a','#1e5a3a'], halo:'120,255,160', ring:'#c9ffd9', band:'#0f3a24'},
-  rust: {base:['#e08a3a','#6a2e12'], halo:'255,160,80', band:'#3a1608'},
-  molten:{base:['#ffae3a','#5a1a06'], halo:'255,110,40', band:'#ff5a1a', spot:'#ffe08a'},
-  gold: {base:['#ffe08a','#8a5a1a'], halo:'255,220,120', ring:'#fff0c0', band:'#7a4a10'}
-};
-var PLANETS=[];
-var nextPlanetAt=0;
-function spawnPlanet(){
-  var set = Math.random()<ZM.pT ? ZM.planetsTo : ZM.planetsFrom;
-  var type=set[Math.floor(Math.random()*set.length)];
-  var big = (type==='gas'||type==='jade'||type==='gold'||type==='ocean');
-  var r = big ? 34+Math.random()*10 : 22+Math.random()*14;
-  PLANETS.push({
-    type:type, r:r,
-    x:W+r+20,
-    y:70+Math.random()*(GROUND_Y-180),
-    spd:0.12+Math.random()*0.08,
-    seed:Math.random()*100
-  });
-}
-function updatePlanets(f){
-  if(frames>=nextPlanetAt){
-    spawnPlanet();
-    nextPlanetAt=frames+900+Math.random()*900;
-  }
-  PLANETS.forEach(function(p){ p.x-=p.spd*f; });
-  while(PLANETS.length && PLANETS[0].x < -PLANETS[0].r*3) PLANETS.shift();
-}
-function drawPlanet(p){
-  var x=p.x, y=p.y, r=p.r;
-  var s=PLANET_STY[p.type];
-  ctx.save();
-  /* atmosphere glow: wide soft halo in the planet's air color */
-  var halo=ctx.createRadialGradient(x,y,r*0.85,x,y,r*1.9);
-  halo.addColorStop(0,'rgba('+s.halo+',0.38)');
-  halo.addColorStop(0.5,'rgba('+s.halo+',0.12)');
-  halo.addColorStop(1,'rgba('+s.halo+',0)');
-  ctx.fillStyle=halo;
-  ctx.fillRect(x-r*2,y-r*2,r*4,r*4);
-
-  /* ring behind the planet */
-  if(s.ring){
-    ctx.strokeStyle='rgba(240,220,255,0.35)';
-    ctx.lineWidth=3;
-    ctx.beginPath(); ctx.ellipse(x,y,r*1.9,r*0.45,-0.2,Math.PI,2*Math.PI); ctx.stroke();
-  }
-
-  /* body with a shaded terminator */
-  var bg=ctx.createRadialGradient(x-r*0.35,y-r*0.35,r*0.1,x,y,r);
-  bg.addColorStop(0,s.base[0]);
-  bg.addColorStop(1,s.base[1]);
-  ctx.fillStyle=bg;
-  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-
-  /* banding / surface detail */
-  ctx.save();
-  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.clip();
-  ctx.globalAlpha=0.2;
-  ctx.fillStyle=s.band;
-  for(var b=0;b<4;b++){
-    var by=y-r+(b+0.5+((p.seed*0.1)%0.5))*(2*r/4.5);
-    ctx.fillRect(x-r, by, 2*r, Math.max(2,r*0.12));
-  }
-  if(s.spot){
-    ctx.globalAlpha=0.3; ctx.fillStyle=s.spot;
-    ctx.beginPath(); ctx.arc(x+r*0.4,y+r*0.2,r*0.25,0,Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(x-r*0.35,y-r*0.3,r*0.18,0,Math.PI*2); ctx.fill();
-  }
-  ctx.restore();
-
-  /* rim light on the sunward edge */
-  ctx.strokeStyle='rgba('+s.halo+',0.85)';
-  ctx.lineWidth=2;
-  ctx.beginPath(); ctx.arc(x,y,r-1,-1.3,0.2); ctx.stroke();
-
-  /* ring in front of the planet, lower arc */
-  if(s.ring){
-    ctx.strokeStyle='rgba(240,220,255,0.6)';
-    ctx.lineWidth=3;
-    ctx.beginPath(); ctx.ellipse(x,y,r*1.9,r*0.45,-0.2,0,Math.PI); ctx.stroke();
-    ctx.strokeStyle='rgba(180,140,230,0.4)';
-    ctx.lineWidth=1.5;
-    ctx.beginPath(); ctx.ellipse(x,y,r*1.6,r*0.38,-0.2,0,Math.PI); ctx.stroke();
-  }
-  ctx.restore();
-}
-function drawPlanets(){
-  PLANETS.forEach(drawPlanet);
-}
-
-/* ---------- drifting starfield (3 parallax layers) ---------- */
-var STAR_LAYERS=[
-  {spd:0.25, size:1, alpha:0.5, n:40},
-  {spd:0.6,  size:1, alpha:0.8, n:24},
-  {spd:1.4,  size:2, alpha:1.0, n:10}
-];
-var STARS=[];
-function initStars(){
-  STARS=[];
-  STAR_LAYERS.forEach(function(L,li){
-    for(var i=0;i<L.n;i++){
-      STARS.push({l:li, x:Math.random()*W, y:Math.random()*GROUND_Y, tw:Math.random()*6.28});
+    if(p.y>GROUND_Y+4 || p.x<-8){
+      p.y=-6; p.x=Math.random()*(W+20);
     }
   });
 }
-function updateStars(f){
-  STARS.forEach(function(s){
-    var L=STAR_LAYERS[s.l];
-    s.x-=L.spd*f;
-    if(s.x<0){ s.x+=W; s.y=Math.random()*GROUND_Y; }
-    s.tw+=0.03*f;
+var LEAVES=['#ff8c2a','#c2491a','#ffb84d','#d9542a'];
+function drawParts(){
+  var dim=1-0.65*NIGHT;
+  PARTS.forEach(function(p){
+    var w=sw(p.s);
+    if(w<0.02) return;
+    var a=w*dim;
+    if(p.s===0){
+      ctx.fillStyle='rgba(255,176,206,'+(0.92*a).toFixed(3)+')';
+      ctx.fillRect(Math.floor(p.x),Math.floor(p.y),3,2);
+    } else if(p.s===1){
+      ctx.fillStyle='rgba(255,226,170,'+(0.55*a).toFixed(3)+')';
+      ctx.fillRect(Math.floor(p.x),Math.floor(p.y),2,1);
+    } else if(p.s===2){
+      ctx.fillStyle=LEAVES[p.c+0]; ctx.globalAlpha=a;
+      ctx.fillRect(Math.floor(p.x),Math.floor(p.y),3,3);
+      ctx.fillStyle=LEAVES[3]; ctx.fillRect(Math.floor(p.x)+1,Math.floor(p.y)+1,2,1);
+      ctx.globalAlpha=1;
+    } else {
+      ctx.fillStyle='rgba(255,255,255,'+(0.9*a).toFixed(3)+')';
+      ctx.fillRect(Math.floor(p.x),Math.floor(p.y),p.sz>1?2:1,p.sz>1?2:1);
+    }
   });
-}
-function drawStars(Zc){
-  STARS.forEach(function(s){
-    var L=STAR_LAYERS[s.l];
-    ctx.globalAlpha=L.alpha*(0.55+0.45*Math.sin(s.tw));
-    ctx.fillStyle = s.l===2 ? Zc.tint : Zc.star;
-    ctx.fillRect(Math.floor(s.x), Math.floor(s.y), L.size, L.size);
-  });
-  ctx.globalAlpha=1;
 }
 
-/* ---------- shooting stars + meteor showers ---------- */
-var METEORS=[];
-function spawnMeteor(){
-  var sh = showerT>0;
-  METEORS.push({
-    x: W*0.35 + Math.random()*W*0.9,
-    y: -10 + Math.random()*GROUND_Y*0.45,
-    vx: -(3.2+Math.random()*2.2),
-    vy: 1.1+Math.random()*1.1,
-    len: 26+Math.random()*(sh?34:24),
-    life: 0,
-    max: 120+Math.random()*60,
-    bright: sh ? 1 : 0.75
-  });
-}
-function updateMeteors(f){
-  if(frames>=nextMeteorAt){
-    spawnMeteor();
-    nextMeteorAt = frames + (showerT>0 ? 8+Math.random()*10 : 300+Math.random()*420);
+/* ---------- ground: season surfaces blend with the palette ---------- */
+function groundDecor(s){
+  var off=groundOff;
+  var x;
+  if(s===0){ /* spring: grass tufts and small blossoms */
+    ctx.fillStyle='#3f8f3a';
+    for(x=-mod(off,10);x<W;x+=10){ ctx.fillRect(x,GROUND_Y+2,2,4); ctx.fillRect(x+3,GROUND_Y+1,2,5); }
+    ctx.fillStyle='#ff9ac4';
+    for(x=-mod(off,48);x<W;x+=48){ ctx.fillRect(x+6,GROUND_Y+8,3,3); }
+    ctx.fillStyle='#fff3a0';
+    for(x=-mod(off,48)+30;x<W;x+=48){ ctx.fillRect(x,GROUND_Y+10,2,2); }
+  } else if(s===1){ /* summer: sand ripples */
+    ctx.fillStyle='rgba(255,236,190,0.35)';
+    for(var y=GROUND_Y+18;y<H;y+=14){
+      for(x=-mod(off,30);x<W;x+=30){ ctx.fillRect(x,y,14,1); }
+    }
+  } else if(s===2){ /* autumn: fallen leaves on the path */
+    for(var i=0;i<14;i++){
+      var lx=mod(i*37-off,W), ly=GROUND_Y+4+(i*11)%20;
+      ctx.fillStyle=LEAVES[i%3];
+      ctx.fillRect(lx,ly,3,2);
+    }
+  } else { /* winter: snow bumps on the surface and an ice shine */
+    ctx.fillStyle='#ffffff';
+    for(x=-mod(off,16);x<W;x+=16){
+      ctx.beginPath(); ctx.arc(x+8,GROUND_Y+2,7,Math.PI,0); ctx.fill();
+    }
+    ctx.fillStyle='#bfe9ff';
+    ctx.fillRect(0,GROUND_Y+14,W,1);
   }
-  METEORS.forEach(function(m){
-    m.x+=m.vx*f; m.y+=m.vy*f; m.life+=f;
-  });
-  METEORS=METEORS.filter(function(m){
-    return m.life<m.max && m.x>-80 && m.y<GROUND_Y;
-  });
 }
-function drawMeteors(Zc){
-  METEORS.forEach(function(m){
-    var sp=Math.sqrt(m.vx*m.vx+m.vy*m.vy);
-    var ux=m.vx/sp, uy=m.vy/sp;
-    var tx=m.x-ux*m.len, ty=m.y-uy*m.len;
-    var a=Math.min(1, m.life/10, (m.max-m.life)/25)*m.bright;
-    if(a<=0) return;
-    var g=ctx.createLinearGradient(tx,ty,m.x,m.y);
-    g.addColorStop(0,'rgba('+Zc.rimRGB+',0)');
-    g.addColorStop(1,'rgba('+Zc.rimRGB+','+a.toFixed(3)+')');
-    ctx.strokeStyle=g;
-    ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(m.x,m.y); ctx.stroke();
-    ctx.strokeStyle='rgba(255,255,255,'+(a*0.6).toFixed(3)+')';
-    ctx.lineWidth=0.8;
-    ctx.beginPath(); ctx.moveTo(tx+ux*m.len*0.6,ty+uy*m.len*0.6); ctx.lineTo(m.x,m.y); ctx.stroke();
-    ctx.fillStyle='rgba(255,255,255,'+a.toFixed(3)+')';
-    ctx.fillRect(m.x-1,m.y-1,3,3);
-  });
+function drawGround(){
+  ctx.fillStyle=rgb(PAL.groundDark,1);
+  ctx.fillRect(0,GROUND_Y,W,GROUND_H);
+  ctx.fillStyle=rgb(PAL.ground,1);
+  ctx.fillRect(0,GROUND_Y,W,10);
+  for(var s=0;s<4;s++){
+    var w=sw(s);
+    if(w<0.01) continue;
+    ctx.globalAlpha=w;
+    groundDecor(s);
+    ctx.globalAlpha=1;
+  }
+  ctx.save();
+  ctx.shadowColor=rgb(PAL.rim,1);
+  ctx.shadowBlur=10;
+  ctx.fillStyle=rgb(PAL.rim,1);
+  ctx.fillRect(0,GROUND_Y,W,2);
+  ctx.restore();
 }
 
-/* ---------- asteroid gates: metal shafts with colored energy rims and light streaks ---------- */
-function drawShaft(x,y,h,capAtBottom,seed,Zc){
+/* ---------- pillars: each season has its own design ---------- */
+function drawShaft(x,y,h,capAtBottom,seed,season){
   if(h<=0) return;
+  var P=PILLAR[season];
   var g=ctx.createLinearGradient(x,0,x+GATE_W,0);
-  g.addColorStop(0,'#1a1d3a');
-  g.addColorStop(0.3,'#6a74a8');
-  g.addColorStop(0.5,'#2c3260');
-  g.addColorStop(0.72,'#8f9ad0');
-  g.addColorStop(1,'#15172e');
+  g.addColorStop(0,P.s0); g.addColorStop(0.5,P.s1); g.addColorStop(1,P.s2);
   ctx.fillStyle=g;
   ctx.fillRect(x+6,y,GATE_W-12,h);
-  /* zone tint washed over the metal */
-  ctx.fillStyle='rgba('+Zc.glowRGB+',0.13)';
-  ctx.fillRect(x+6,y,GATE_W-12,h);
 
-  /* light streaks that scroll down the pillar */
   ctx.save();
   ctx.beginPath(); ctx.rect(x+6,y,GATE_W-12,h); ctx.clip();
-  var sp=((frames*1.6+seed*53)%(h+70))-35;
-  ctx.globalAlpha=0.6;
-  ctx.fillStyle=Zc.rimA;
-  ctx.fillRect(x+14, y+sp-16, 3, 32);
-  var sp2=((frames*0.9+seed*31+h*0.5)%(h+90))-45;
-  ctx.globalAlpha=0.35;
-  ctx.fillStyle=Zc.rimB;
-  ctx.fillRect(x+33, y+sp2-22, 2, 44);
-  /* glowing bevel lines on both edges */
-  ctx.globalAlpha=0.55;
-  ctx.fillStyle=Zc.rimA;
-  ctx.fillRect(x+7,y,1,h);
-  ctx.fillStyle=Zc.rimB;
-  ctx.fillRect(x+GATE_W-8,y,1,h);
+  var k;
+  if(season===0){ /* blossom-green: mossy stone with pink blossom clusters */
+    ctx.fillStyle=P.band; ctx.globalAlpha=0.35;
+    for(k=0;k<6;k++){ ctx.fillRect(x+6,y+((seed*23+k*41)%Math.max(1,h-6)),GATE_W-12,2); }
+    ctx.globalAlpha=1;
+    for(k=0;k<9;k++){
+      var bcy=y+8+((seed*37+k*61)%Math.max(1,h-16));
+      var bcx=x+10+((k*17+Math.floor(seed*7))%(GATE_W-20));
+      ctx.fillStyle=P.blossom[k%3];
+      ctx.beginPath(); ctx.arc(bcx,bcy,2.6,0,Math.PI*2); ctx.fill();
+    }
+  } else if(season===1){ /* sandstone and terracotta: carved bands */
+    ctx.fillStyle=P.band; ctx.globalAlpha=0.4;
+    for(k=0;k<8;k++){ ctx.fillRect(x+6,y+((seed*19+k*26)%Math.max(1,h-4)),GATE_W-12,2); }
+    ctx.globalAlpha=1;
+    ctx.fillStyle='rgba(255,240,200,0.5)';
+    ctx.fillRect(x+12,y,2,h);
+  } else if(season===2){ /* bare autumn trunk: bark grooves */
+    ctx.fillStyle=P.bark; ctx.globalAlpha=0.6;
+    ctx.fillRect(x+12+(seed%3),y,1,h);
+    ctx.fillRect(x+24+((seed*2)%3),y,1,h);
+    ctx.fillRect(x+36,y,1,h);
+    ctx.globalAlpha=1;
+    ctx.fillStyle='rgba(255,176,90,0.25)';
+    ctx.fillRect(x+30,y,4,h);
+  } else { /* winter ice: translucent blue with streaks */
+    ctx.fillStyle='rgba(255,255,255,0.45)';
+    ctx.fillRect(x+14,y,2,h);
+    ctx.fillRect(x+30,y+((seed*13)%20),1,h*0.6);
+    ctx.fillStyle='rgba(200,240,255,0.5)';
+    for(k=0;k<4;k++){ ctx.fillRect(x+8+k*10,y+((seed*29+k*50)%Math.max(1,h-10)),1,8); }
+  }
   ctx.restore();
 
-  /* panel seams and rivets */
-  ctx.fillStyle=COL.K;
-  ctx.fillRect(x+5,y,1,h);
-  ctx.fillRect(x+GATE_W-6,y,1,h);
-  ctx.fillStyle='#b8c2ff';
-  for(var ry=y+8; ry<y+h-6; ry+=18){
-    ctx.fillRect(x+10,ry,2,2);
-    ctx.fillRect(x+GATE_W-12,ry,2,2);
+  /* bare branches stick out from autumn trunks, outside the clip */
+  if(season===2){
+    ctx.strokeStyle=P.bark; ctx.lineWidth=3;
+    for(var b=0;b*46<h-20;b++){
+      var yy=y+18+b*46;
+      ctx.beginPath();
+      ctx.moveTo(x+GATE_W-6,yy); ctx.lineTo(x+GATE_W+7,yy-7);
+      ctx.moveTo(x+6,yy+10); ctx.lineTo(x-5,yy+3);
+      ctx.stroke();
+    }
   }
-  /* embedded rock chunks */
-  for(var c=0;c<3;c++){
-    var cy=y+10+((seed*97+c*53)%Math.max(1,h-20));
-    if(cy<y+6 || cy>y+h-8) continue;
-    var cx=x+GATE_W/2+((c%2)?-6:5);
-    ctx.fillStyle='#3a3340';
-    ctx.beginPath(); ctx.arc(cx,cy,4+(c%2),0,Math.PI*2); ctx.fill();
-    ctx.fillStyle='#262130';
-    ctx.fillRect(cx-1,cy-1,2,2);
-  }
-  /* energy emitter plate at the gap side, colored by zone */
+
+  /* cap at the gap side */
   var py = capAtBottom ? y+h-CAP_H : y;
-  ctx.save();
-  ctx.shadowColor=Zc.rimA;
-  ctx.shadowBlur=12;
-  ctx.fillStyle='#0b1a2e';
-  ctx.fillRect(x-4,py,GATE_W+8,CAP_H);
-  ctx.restore();
-  ctx.fillStyle=Zc.rimA;
-  ctx.fillRect(x-4,py+CAP_H/2-1,GATE_W+8,2);
-  ctx.globalAlpha=0.5+0.25*Math.sin(frames*0.2);
-  ctx.fillStyle=Zc.rimB;
-  ctx.fillRect(x-4,py+2,GATE_W+8,1);
+  if(season===0){
+    ctx.fillStyle=P.cap;
+    ctx.fillRect(x-4,py,GATE_W+8,CAP_H);
+    for(k=0;k<6;k++){
+      ctx.fillStyle=P.blossom[k%3];
+      ctx.beginPath(); ctx.arc(x+2+k*9.2,py+(capAtBottom?CAP_H-3:3),3,0,Math.PI*2); ctx.fill();
+    }
+  } else if(season===1){
+    ctx.fillStyle=P.cap;
+    ctx.fillRect(x-4,py,GATE_W+8,CAP_H);
+    ctx.fillStyle=P.band; ctx.globalAlpha=0.5;
+    for(k=0;k<9;k++){ ctx.fillRect(x-4+k*8,py+(capAtBottom?0:CAP_H-3),4,3); }
+    ctx.globalAlpha=1;
+  } else if(season===2){
+    ctx.fillStyle=P.cap;
+    ctx.fillRect(x-4,py,GATE_W+8,CAP_H);
+    for(k=0;k<6;k++){
+      ctx.fillStyle=P.leaves[k%3];
+      ctx.beginPath(); ctx.arc(x+2+k*9,py+(capAtBottom?CAP_H:0),5,0,Math.PI*2); ctx.fill();
+    }
+  } else {
+    /* ice cap with icicles hanging into the gap, glowing frost */
+    ctx.save();
+    ctx.shadowColor=P.glow; ctx.shadowBlur=10;
+    ctx.fillStyle=P.cap;
+    ctx.fillRect(x-4,py,GATE_W+8,CAP_H);
+    ctx.restore();
+    for(k=0;k<5;k++){
+      var xi=x+4+k*((GATE_W-8)/4);
+      var len=6+((seed*13+k*7)%7);
+      ctx.fillStyle=P.icicle;
+      ctx.beginPath();
+      if(capAtBottom){
+        ctx.moveTo(xi-3,py+CAP_H); ctx.lineTo(xi+3,py+CAP_H); ctx.lineTo(xi,py+CAP_H+len);
+      } else {
+        ctx.moveTo(xi-3,py); ctx.lineTo(xi+3,py); ctx.lineTo(xi,py-len);
+      }
+      ctx.closePath(); ctx.fill();
+    }
+  }
+
+  /* edge rims in the season color */
+  ctx.globalAlpha=0.6;
+  ctx.fillStyle=P.rimc;
+  ctx.fillRect(x+6,y,1,h);
+  ctx.fillRect(x+GATE_W-7,y,1,h);
   ctx.globalAlpha=1;
-  ctx.strokeStyle=COL.K;
-  ctx.lineWidth=2;
-  ctx.strokeRect(x-4,py,GATE_W+8,CAP_H);
+
+  /* at night the pillars dim */
+  if(NIGHT>0.01){
+    ctx.fillStyle='rgba(10,14,40,'+(0.42*NIGHT).toFixed(3)+')';
+    ctx.fillRect(x-4,y,GATE_W+8,h);
+  }
 }
 function drawGate(p){
   var gy=p.top+p.gap;
-  var Zc=Z();
-  drawShaft(p.x, 0, p.top, true, p.seed, Zc);
-  drawShaft(p.x, gy, GROUND_Y-gy, false, p.seed+0.5, Zc);
+  drawShaft(p.x, 0, p.top, true, p.seed, p.season);
+  drawShaft(p.x, gy, GROUND_Y-gy, false, p.seed+0.5, p.season);
 }
 function gapFor(){
   /* 1-19: wide, gentle gaps. after each 20-point mark: gaps shrink ~6px per zone (floor 92) */
@@ -471,34 +541,33 @@ function gapFor(){
   return base+Math.floor(Math.random()*5);
 }
 function zoneSpeedMult(z){
-  /* 1-19: gentle slope up to +3%. each zone after the first: +8%, and each full 3-zone cycle: +10% more */
+  /* 1-19: gentle slope up to +3%. each zone after the first: +8%, and each full 4-season cycle: +10% more */
   if(z===0) return 1+0.03*clamp(score/(ZONE_PTS-1),0,1);
-  return Math.min(2.2,(1+0.08*z)*(1+0.10*Math.floor(z/3)));
+  return Math.min(2.2,(1+0.08*z)*(1+0.10*Math.floor(z/4)));
 }
 function speedNow(){
   /* the speed step eases in with the crossfade so the 20-point mark never jolts the pace */
-  var t=smooth01(blendF);
+  var t=BLEND;
   var a=zoneSpeedMult(zoneFrom), b=zoneSpeedMult(zoneN);
   return SPEED*(a+(b-a)*t);
 }
 function addGate(x){
   var gap=gapFor();
   var minTop=70, maxTop=GROUND_Y-70-gap;
-  var p={x:x, gap:gap, top:Math.floor(minTop+Math.random()*(maxTop-minTop)), passed:false, item:null, seed:Math.random()*10};
+  var p={x:x, gap:gap, top:Math.floor(minTop+Math.random()*(maxTop-minTop)), passed:false, item:null, seed:Math.random()*10, season:zoneN%4};
   if(score>=2 && Math.random()<ITEM_CHANCE){
     p.item={type:'shield', taken:false};
   }
   gates.push(p);
 }
-/* power-up orb sits in the middle of the gap */
+/* shield orb sits in the middle of the gap, colored by its season */
 function drawItem(p){
   if(!p.item || p.item.taken) return;
-  var Zc=Z();
   var cx=p.x+GATE_W/2, cy=p.top+p.gap/2;
   var pulse=Math.sin(frames*0.12)*1.5;
-  var col = Zc.rimA;
+  var col=PILLAR[p.season].rimc;
   ctx.save();
-  ctx.shadowColor = col;
+  ctx.shadowColor=col;
   ctx.shadowBlur=12;
   ctx.fillStyle=COL.K;
   ctx.beginPath(); ctx.arc(cx,cy,9+pulse,0,Math.PI*2); ctx.fill();
@@ -506,29 +575,6 @@ function drawItem(p){
   ctx.beginPath(); ctx.arc(cx,cy,7+pulse,0,Math.PI*2); ctx.fill();
   ctx.restore();
   txt('S', cx, cy, 11, '#ffffff');
-}
-
-/* ---------- metal platform with a glowing edge in the zone color ---------- */
-function drawGround(Zc){
-  ctx.fillStyle='#0a0d1f';
-  ctx.fillRect(0,GROUND_Y,W,GROUND_H);
-  var off=Math.floor(groundOff)%24;
-  ctx.fillStyle='#17234f';
-  for(var x=-off;x<W;x+=24) ctx.fillRect(x,GROUND_Y+10,1,GROUND_H-10);
-  for(var y=GROUND_Y+18;y<H;y+=12) ctx.fillRect(0,y,W,1);
-  /* scrolling HUD dashes just under the edge */
-  ctx.fillStyle=Zc.rimB;
-  ctx.globalAlpha=0.45;
-  var doff=Math.floor(groundOff*1.5)%16;
-  for(var dx=-doff;dx<W;dx+=16) ctx.fillRect(dx,GROUND_Y+5,8,1);
-  ctx.globalAlpha=1;
-  /* glowing edge line */
-  ctx.save();
-  ctx.shadowColor=Zc.rimA;
-  ctx.shadowBlur=12;
-  ctx.fillStyle=Zc.rimA;
-  ctx.fillRect(0,GROUND_Y,W,2);
-  ctx.restore();
 }
 
 /* ---------- bird ---------- */
@@ -541,13 +587,13 @@ function drawBird(){
   ctx.rotate(ang);
   ctx.translate(-BIRD_W/2,-BIRD_H/2);
   if(blink) ctx.globalAlpha=0.35;
-  /* thruster glow: faint at rest, bright on each flap */
+  /* thruster glow: faint at rest, bright on each flap, tinted by the season */
   var pulse = flapT>0 ? 1 : 0.35;
   var tr = flapT>0 ? 14 : 8;
   var tg=ctx.createRadialGradient(12,BIRD_H+3,0,12,BIRD_H+3,tr);
-  tg.addColorStop(0,'rgba(127,243,255,'+(0.55*pulse).toFixed(2)+')');
-  tg.addColorStop(0.45,'rgba(197,139,255,'+(0.25*pulse).toFixed(2)+')');
-  tg.addColorStop(1,'rgba(197,139,255,0)');
+  tg.addColorStop(0,rgb(PAL.rim,0.55*pulse));
+  tg.addColorStop(0.45,rgb(PAL.glow,0.25*pulse));
+  tg.addColorStop(1,rgb(PAL.glow,0));
   ctx.save();
   ctx.globalCompositeOperation='lighter';
   ctx.fillStyle=tg;
@@ -571,7 +617,7 @@ function drawBird(){
   }
   ctx.restore();
   if(shield){
-    ctx.strokeStyle='#7ff3ff';
+    ctx.strokeStyle=rgb(PAL.rim,1);
     ctx.lineWidth=2;
     ctx.globalAlpha=0.85;
     ctx.beginPath();
@@ -607,9 +653,9 @@ function hudTag(s,x,y,color,right){
 }
 function drawHUD(){
   var y=10;
-  if(shield){ hudTag('SHIELD',8,y,'#7ff3ff'); y+=22; }
-  /* subtle zone tag, top-right, left of the mute button */
-  hudTag('ZONE '+(zoneN+1), MUTE_BOX.x-6, 10, Z().rimA, true);
+  if(shield){ hudTag('SHIELD',8,y,rgb(PAL.rim,1)); y+=22; }
+  /* season tag, top-right, left of the mute button */
+  hudTag(SEASON_NAMES[zoneN%4], MUTE_BOX.x-6, 10, rgb(PAL.rim,1), true);
 }
 
 /* ---------- audio: generative ambient pad + soft SFX (WebAudio, no files) ---------- */
@@ -624,7 +670,7 @@ function ensureAudio(){
   master.connect(ac.destination);
   ambBus=ac.createGain(); ambBus.gain.value=0.042;
   sfxBus=ac.createGain(); sfxBus.gain.value=0.33;
-  /* soft space echo shared by pad and sfx */
+  /* soft echo shared by pad and sfx */
   var dl=ac.createDelay(1.0); dl.delayTime.value=0.41;
   var fb=ac.createGain(); fb.gain.value=0.3;
   var wet=ac.createGain(); wet.gain.value=0.22;
@@ -633,7 +679,7 @@ function ensureAudio(){
   sfxBus.connect(master); sfxBus.connect(dl);
   /* slow filter sweep LFO, shared by all pad filters */
   var lfo=ac.createOscillator(); lfo.frequency.value=0.05;
-  lfoGain=ac.createGain(); lfoGain.gain.value=260;
+  lfoGain=ac.createGain(); lfoGain.gain.value=200;
   lfo.connect(lfoGain); lfo.start();
   /* one second of white noise for whooshes */
   noiseBuf=ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
@@ -643,21 +689,21 @@ function ensureAudio(){
   return ac;
 }
 function mtof(m){ return 440*Math.pow(2,(m-69)/12); }
-/* each zone has its own chord loop and filter brightness: violet dreamy, emerald bright, amber dark */
+/* each season has its own chord loop: spring light, summer warm, autumn mellow, winter quiet and crisp */
 var chordIdx=0;
 function playChord(t0){
-  var Zc=Z();
-  var ch=Zc.chords[chordIdx%Zc.chords.length];
+  var M=SEASON_MUSIC[zoneN%4];
+  var ch=M.chords[chordIdx%M.chords.length];
   chordIdx++;
   var dur=9;
   var lp=ac.createBiquadFilter();
-  lp.type='lowpass'; lp.frequency.value=Zc.lp; lp.Q.value=0.4;
+  lp.type='lowpass'; lp.frequency.value=M.lp; lp.Q.value=0.4;
   lfoGain.connect(lp.frequency);
   lp.connect(ambBus);
   ch.forEach(function(m,vi){
     var f=mtof(m);
     var g=ac.createGain();
-    var peak=0.11/ch.length*2;
+    var peak=0.11/ch.length*2*M.gain;
     g.gain.setValueAtTime(0.0001,t0);
     g.gain.exponentialRampToValueAtTime(peak,t0+3);
     g.gain.setValueAtTime(peak,t0+dur-3);
@@ -670,13 +716,13 @@ function playChord(t0){
     o.start(t0); o2.start(t0);
     o.stop(t0+dur+2); o2.stop(t0+dur+2);
   });
-  /* occasional airy bell on top of the chord */
+  /* occasional bell on top of the chord */
   if(Math.random()<0.6){
     var bt=t0+2+Math.random()*4;
     var bo=ac.createOscillator(); bo.type='sine'; bo.frequency.value=mtof(ch[3]+12);
     var bg=ac.createGain();
     bg.gain.setValueAtTime(0.0001,bt);
-    bg.gain.exponentialRampToValueAtTime(0.05,bt+0.6);
+    bg.gain.exponentialRampToValueAtTime(0.05*M.gain,bt+0.6);
     bg.gain.exponentialRampToValueAtTime(0.0001,bt+4);
     bo.connect(bg); bg.connect(ambBus);
     bo.start(bt); bo.stop(bt+4.2);
@@ -740,6 +786,7 @@ function whoosh(){
   src.connect(bp); bp.connect(g); g.connect(sfxBus);
   src.start(t, Math.random()*0.5); src.stop(t+0.3);
 }
+
 /* ---------- game logic ---------- */
 function reset(){
   bird={x:BIRD_X, y:H/2-80, vy:0};
@@ -749,14 +796,8 @@ function reset(){
   shake=0; flash=0;
   shield=false; invuln=0; flapT=0;
   zoneN=0; zoneFrom=0; blendF=1;
-  refreshZone();
 }
-function startRun(){
-  runs++;
-  try{ localStorage.setItem(RUNS_KEY,String(runs)); }catch(e){}
-  /* every few runs a full meteor shower lights up the sky */
-  if(runs%SHOWER_EVERY===0){ showerT=SHOWER_FRAMES; showerBanner=150; }
-}
+function startRun(){ /* no per-run extras: the season cycle carries the mood */ }
 function flapNow(){
   bird.vy=FLAP;
   flapT=12;
@@ -788,7 +829,7 @@ function hitBird(){
   }
   return true;
 }
-/* the theme starts crossfading to the next zone; refreshZone eases it in over ZONE_BLEND_FRAMES */
+/* the season starts crossfading to the next; blendF eases in over ZONE_BLEND_FRAMES */
 function beginZoneBlend(){
   zoneFrom=zoneN; zoneN++; blendF=0;
 }
@@ -806,18 +847,13 @@ function update(f0){
   frames+=f0;
   var f=f0;
   visScore+=(score-visScore)*Math.min(1,0.05*f0);
-  updateStars(f0);
-  updateMeteors(f0);
-  updatePlanets(f);
-  updateDust(f0);
+  if(blendF<1) blendF=Math.min(1,blendF+f0/ZONE_BLEND_FRAMES);
+  computePal();
+  updateParts(f0);
   hillOff+=0.35*f;
   groundOff+=speedNow()*f;
   if(shake>0) shake=Math.max(0,shake-0.6*f0);
   if(flash>0) flash=Math.max(0,flash-0.05*f0);
-  if(showerT>0) showerT=Math.max(0,showerT-f0);
-  if(showerBanner>0) showerBanner=Math.max(0,showerBanner-f0);
-  if(blendF<1) blendF=Math.min(1,blendF+f0/ZONE_BLEND_FRAMES);
-  refreshZone();
 
   if(state==='ready'){
     bird.vy=0;
@@ -880,9 +916,10 @@ function drawScore(){
   txt(String(score), W/2, 60, 40, '#ffffff');
 }
 function drawTitle(){
-  txt('PRIME', W/2, 150, 44, '#4aa8ff');
-  txt('STAR RUN', W/2, 192, 28, '#e7b8ff');
-  txt('robot warrior, deep space edition', W/2, 230, 12, '#ffffff');
+  txt('PRIME', W/2, 150, 44, '#ffffff');
+  txt('EARTH SEASONS', W/2, 192, 26, '#d6f5a8');
+  txt('robot warrior, four seasons', W/2, 230, 12, '#ffffff');
+  txt('spring summer autumn winter', W/2, 250, 10, '#ffffff');
   if(Math.floor(frames/30)%2===0) txt('tap or space to flap', W/2, 300, 15, '#ffffff');
   txt('BEST '+best, W/2, 340, 16, '#ffe27a');
 }
@@ -900,20 +937,19 @@ function drawGameOver(){
   if(frames-deadAt>35 && Math.floor(frames/25)%2===0) txt('tap or space to retry', W/2, 390, 15, '#ffffff');
 }
 function render(){
-  var Zc=Z();
   ctx.save();
   if(shake>0.5){
     ctx.translate(Math.round((Math.random()*2-1)*shake), Math.round((Math.random()*2-1)*shake));
   }
-  drawSky(Zc);
-  if(Zc.auroraA>0.01) drawAurora(Zc);
-  drawStars(Zc);
-  drawMeteors(Zc);
-  drawPlanets();
-  if(Zc.dustA>0.01) drawDust(Zc);
+  drawSky();
+  drawBodies();
+  drawStars();
+  drawHills();
+  drawHeat();
+  drawParts();
   for(var i=0;i<gates.length;i++) drawGate(gates[i]);
   for(var j=0;j<gates.length;j++) drawItem(gates[j]);
-  drawGround(Zc);
+  drawGround();
   drawBird();
   ctx.restore();
 
@@ -924,11 +960,6 @@ function render(){
   if(state==='play'){
     drawScore();
     drawHUD();
-    if(showerBanner>0){
-      ctx.globalAlpha=Math.min(1, showerBanner/30);
-      txt('METEOR SHOWER', W/2, 140, 13, '#ffffff');
-      ctx.globalAlpha=1;
-    }
   }
   else if(state==='ready') drawTitle();
   else if(state==='dead') drawGameOver();
@@ -938,18 +969,19 @@ function render(){
 /* ---------- mute button (canvas-drawn, top-right) ---------- */
 function drawMuteBtn(){
   var b=MUTE_BOX;
-  ctx.fillStyle='rgba(8,6,24,0.7)';
+  ctx.fillStyle='rgba(8,20,14,0.7)';
   ctx.fillRect(b.x,b.y,b.w,b.h);
-  ctx.strokeStyle='#7ff3ff';
+  var col = muted ? '#ff7a7a' : '#ffffff';
+  ctx.strokeStyle=col;
   ctx.lineWidth=1;
   ctx.strokeRect(b.x+0.5,b.y+0.5,b.w-1,b.h-1);
   var cx=b.x+6, cy=b.y+b.h/2;
-  ctx.fillStyle = muted ? '#ff7a7a' : '#7ff3ff';
+  ctx.fillStyle = col;
   ctx.fillRect(cx-2,cy-2,3,4);
   ctx.beginPath();
   ctx.moveTo(cx+1,cy-2); ctx.lineTo(cx+5,cy-5); ctx.lineTo(cx+5,cy+5); ctx.lineTo(cx+1,cy+2);
   ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = muted ? '#ff7a7a' : '#7ff3ff';
+  ctx.strokeStyle = col;
   ctx.beginPath();
   if(!muted){
     ctx.arc(cx+5,cy,4,-0.8,0.8);
@@ -988,11 +1020,12 @@ window.addEventListener('keydown', function(e){
 });
 window.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 
-/* ---------- loop ---------- */
-initStars();
-nextPlanetAt=60;
+/* ---------- init ---------- */
+for(var pk=0;pk<PARTS.length;pk++){ PARTS[pk].y=Math.random()*GROUND_Y; }
 reset();
-refreshZone();
+computePal();
+
+/* ---------- loop ---------- */
 var lastT=null;
 function loop(t){
   var dt=(lastT===null)?16.667:(t-lastT);
