@@ -18,6 +18,7 @@
 
 /* Prime Run. Single-file endless runner, no dependencies.
    Prime auto-runs. Tap or space jumps, down arrow or swipe down slides under overhead branches and icicles.
+   Hold (touch, space or up) while airborne to boost: softer gravity and a speed surge that carries Prime over long low logs.
    Four seasons (spring, summer, autumn, winter) cycle every 200 points with a slow crossfade.
    Day and night drift on a 60 second cycle. Score is distance. Best score lives in localStorage. */
 
@@ -29,6 +30,8 @@ var SPEED0=5.6, SPEED_MAX=13.5, SPEED_RAMP=0.0012;
 var DIST_PER_PT=40, ZONE_PTS=200, ZONE_BLEND_FRAMES=480, DAY_LEN=3600;
 var AIR_Y=GROUND_Y-44, AIR_H=22;     /* overhead band: hits a standing or jumping Prime, misses a slide */
 var KEY='primeRunnerBest';
+var BOOST_KEY='primeRunnerBoostSeen';
+var BOOST_FRAMES=22, BOOST_GRAV=0.6, BOOST_SPEED=1.2;  /* hold while airborne: softer gravity and a speed surge, limited fuel per jump */
 var MUTE_KEY='primeRunnerMuted';
 var MUTE_BOX={x:W-30,y:8,w:22,h:22};
 var paused=false;
@@ -158,6 +161,8 @@ var state='ready', frames=0, distance=0, score=0, speed=SPEED0;
 var newBest=false, deadAt=0, shake=0;
 var player={lift:0, vy:0, onGround:true, anim:0};
 var duckHeld=false, duckTouch=false, duckNow=false;
+var boostHeld=false, lastWasLong=false, hintT=0, hintSeen=false;
+try{ hintSeen=localStorage.getItem(BOOST_KEY)==='1'; }catch(e){}
 var obs=[], nextGap=0, groundOff=0, hillOff=0, treeOff=0;
 var zoneN=0, zoneFrom=0, blendF=1;
 var lastMilestone=0;
@@ -353,6 +358,22 @@ function drawObstacle(o){
     rr(x,gy-o.h,o.w,o.h,'#dff4ff');
     ctx.fillStyle='#9fd8f0'; ctx.fillRect(x+2,gy-o.h*0.45,o.w-4,o.h*0.45-2);
     ctx.fillStyle='#ffffff'; ctx.fillRect(x+4,gy-o.h+3,o.w-14,3);
+  } else if(o.k==='long'){
+    var lc=['#6fae4a','#c8a064','#c2491a','#eaf6ff'][o.s];
+    var lc2=['#4b8a36','#9a7144','#8c3210','#b9d8ea'][o.s];
+    rr(x,gy-o.h,o.w,o.h,lc);
+    ctx.fillStyle=lc2;
+    for(var lg=6;lg<o.w-6;lg+=18){ ctx.fillRect(x+lg,gy-o.h+4,8,o.h-8); }
+    ctx.fillStyle=COL.K; ctx.fillRect(x,gy-o.h,o.w,2);
+    /* telegraph: blinking chevrons above the log say boost */
+    if(o.x<W && o.x+o.w>0){
+      var on=Math.floor(frames/8)%2===0;
+      ctx.fillStyle = on ? '#ffe27a' : 'rgba(255,226,122,0.35)';
+      for(var ch=0;ch<3;ch++){
+        var cx2=x+o.w/2-18+ch*18, cy2=gy-o.h-12;
+        ctx.beginPath(); ctx.moveTo(cx2-4,cy2-5); ctx.lineTo(cx2+3,cy2); ctx.lineTo(cx2-4,cy2+5); ctx.lineTo(cx2-1,cy2); ctx.closePath(); ctx.fill();
+      }
+    }
   } else if(o.k==='blossom'){
     ctx.fillStyle=COL.K; ctx.fillRect(x,AIR_Y+6,o.w,4);
     ctx.fillStyle='#6b4a2a'; ctx.fillRect(x+2,AIR_Y+8,o.w-4,2);
@@ -395,17 +416,22 @@ function drawObstacle(o){
 function spawnObstacle(){
   var s=zoneN%4;
   var air=score>=15 && Math.random()<0.28;
-  var o;
+  var o, longOne=false;
+  if(!air && score>=25 && !lastWasLong && Math.random()<0.22) longOne=true;
   if(air){
     var ak=AIR_KIND[s];
     o={k:ak, air:true, x:W+4, w:AIR_SIZE[ak].w, h:AIR_H, s:s};
+  } else if(longOne){
+    /* long low log: too wide for a plain hop, so hold to boost across it */
+    o={k:'long', air:false, long:true, x:W+4, w:200+Math.floor(Math.random()*4)*12, h:14, s:s};
   } else {
     var gk=GROUND_KIND[s];
     var g=GROUND_SIZE[gk];
     o={k:gk, air:false, x:W+4, w:g.w+(Math.random()<0.5?0:6), h:g.h, s:s};
   }
+  lastWasLong=longOne;
   obs.push(o);
-  nextGap=speed*(44+Math.random()*46);
+  nextGap=speed*(longOne ? 74+Math.random()*30 : 44+Math.random()*46);
 }
 
 /* ---------- Prime sprite: running, jump and slide poses ---------- */
@@ -655,16 +681,17 @@ function thud(){
 function reset(){
   distance=0; score=0; speed=SPEED0;
   newBest=false; shake=0;
-  player={lift:0, vy:0, onGround:true, anim:player.anim};
+  player={lift:0, vy:0, onGround:true, anim:player.anim, boostLeft:0};
   obs=[];
   nextGap=0;
   zoneN=0; zoneFrom=0; blendF=1;
-  lastMilestone=0;
+  lastMilestone=0; lastWasLong=false; hintT=0;
 }
 function jump(){
   if(!player.onGround) return;
   player.vy=JUMP;
   player.onGround=false;
+  player.boostLeft=BOOST_FRAMES;
   jumpSfx();
 }
 function die(){
@@ -702,7 +729,9 @@ function update(f){
   }
   /* playing */
   speed=Math.min(SPEED_MAX, speed+SPEED_RAMP*f);
-  var step=speed*f;
+  /* boost: holding while airborne with fuel left gives a speed surge, so long logs pass under Prime sooner */
+  var boostNow = boostHeld && !player.onGround && player.boostLeft>0 && !(duckHeld||duckTouch);
+  var step=speed*f*(boostNow?BOOST_SPEED:1);
   distance+=step;
   score=Math.floor(distance/DIST_PER_PT);
   if(score>=lastMilestone+100){ lastMilestone+=100; chime(660,0.09); }
@@ -721,7 +750,9 @@ function update(f){
   duckNow=wantDuck && player.onGround;
 
   if(!player.onGround){
-    player.vy-= GRAV*(wantDuck?FAST_FALL:1)*f;
+    var gv=GRAV*(wantDuck?FAST_FALL:1);
+    if(boostNow){ gv=GRAV*BOOST_GRAV; player.boostLeft-=f; }
+    player.vy-=gv*f;
     player.lift+=player.vy*f;
     if(player.lift<=0){
       player.lift=0; player.vy=0; player.onGround=true;
@@ -737,6 +768,17 @@ function update(f){
     var o=obs[i];
     o.x-=step;
     if(o.x+o.w<-20) obs.splice(i,1);
+  }
+  /* first long log on screen: show the boost hint once per browser */
+  if(hintT>0) hintT-=f;
+  if(!hintSeen){
+    for(var hi=0;hi<obs.length;hi++){
+      if(obs[hi].long && obs[hi].x<W){
+        hintSeen=true; hintT=240;
+        try{ localStorage.setItem(BOOST_KEY,'1'); }catch(e){}
+        break;
+      }
+    }
   }
   /* collision */
   var pb=playerBox();
@@ -778,8 +820,9 @@ function drawTitle(){
   txt('four seasons, one robot', W/2, 102, 13, '#d6f5a8');
   if(Math.floor(frames/30)%2===0) txt('tap or space to jump', W/2, 140, 14, '#ffffff');
   txt('down arrow or swipe down to slide', W/2, 162, 12, '#ffffff');
-  txt('M to mute', W/2, 182, 11, '#ffffff');
-  txt('BEST '+best, W/2, 210, 15, '#ffe27a');
+  txt('hold in the air to boost over long logs', W/2, 184, 11, '#ffe27a');
+  txt('M to mute', W/2, 202, 11, '#ffffff');
+  txt('BEST '+best, W/2, 226, 15, '#ffe27a');
 }
 function drawGameOver(){
   ctx.fillStyle='rgba(255,244,214,0.96)';
@@ -838,6 +881,11 @@ function render(){
   ctx.restore();
 
   drawHUD();
+  if(state==='play' && hintT>0){
+    ctx.globalAlpha=Math.min(1, hintT/40);
+    txt('hold to boost', W/2, 116, 16, '#ffe27a');
+    ctx.globalAlpha=1;
+  }
   if(state==='ready') drawTitle();
   else if(state==='dead') drawGameOver();
   drawMuteBtn();
@@ -908,13 +956,14 @@ window.addEventListener('pointerdown', function(e){
   if(handleChrome(e)) return;
   if(inMuteBox(e)){ ensureAudio(); toggleMute(); return; }
   pStartY=e.clientY;
+  boostHeld=true;
   action();
 }, {passive:false});
 window.addEventListener('pointermove', function(e){
   if(pStartY===null) return;
   if(e.clientY-pStartY>28) duckTouch=true;
 }, {passive:true});
-function endTouch(){ pStartY=null; duckTouch=false; }
+function endTouch(){ pStartY=null; duckTouch=false; boostHeld=false; }
 window.addEventListener('pointerup', endTouch);
 window.addEventListener('pointercancel', endTouch);
 window.addEventListener('touchstart', function(e){
@@ -940,13 +989,15 @@ window.addEventListener('keydown', function(e){
   }
   if(e.code==='Space' || e.code==='ArrowUp' || e.code==='Enter'){
     if(e.preventDefault) e.preventDefault();
+    boostHeld=true;
     if(!e.repeat) action();
   }
 });
 window.addEventListener('keyup', function(e){
   if(e.code==='ArrowDown' || e.code==='KeyS') duckHeld=false;
+  if(e.code==='Space' || e.code==='ArrowUp' || e.code==='Enter') boostHeld=false;
 });
-window.addEventListener('blur', function(){ duckHeld=false; duckTouch=false; });
+window.addEventListener('blur', function(){ duckHeld=false; duckTouch=false; boostHeld=false; });
 window.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 
 /* ---------- init and loop ---------- */
